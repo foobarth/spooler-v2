@@ -1,9 +1,13 @@
 name: Tests
 
+# Fork-only change (not for upstream PRs): also run on every branch push and
+# on demand, so fork-only patches and unmerged contribution branches get CI
+# here immediately instead of waiting on upstream's workflow approval.
 on:
   pull_request:
   push:
-    branches: [dev, main]
+    branches: ["**"]
+  workflow_dispatch:
 
 jobs:
   test:
