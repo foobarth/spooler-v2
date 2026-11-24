@@ -832,9 +832,11 @@ class PrinterConnection:
         # printer. Protocols call _mark_seen() where they actually hear from it.
         self._check_notifications()
         self._track_connection_for_notifications()
+        d = self.to_dict()
+        state.publish("status_update", printer_id=self.id, printer=d)
         await state.broadcast_to_browsers({
             "type":    "printer_update",
-            "printer": self.to_dict(),
+            "printer": d,
         })
 
     def _finish_current_pause(self) -> None:
