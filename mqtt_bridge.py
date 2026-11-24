@@ -13,6 +13,7 @@ are called from server startup and via on_change hooks, never at import.
 
 import asyncio
 import json
+import time
 import urllib.parse
 
 try:
@@ -171,7 +172,7 @@ def _broker_params():
 
 
 async def _run():
-    global _running
+    global _running, _client
     hostname, port, username, password = _broker_params()
     delay = 1.0
     while _running:
@@ -181,11 +182,15 @@ async def _run():
                 hostname=hostname, port=port, identifier=_client_id,
                 username=username, password=password, will=will,
             ) as client:
-                delay = 1.0
-                await _announce(client)
-                # Status fan-out hook arrives with its own slice; idle-wait here.
-                while _running:
-                    await asyncio.sleep(3600)
+                _client = client
+                try:
+                    delay = 1.0
+                    await _announce(client)
+                    # Status fan-out hook arrives with its own slice; idle-wait here.
+                    while _running:
+                        await asyncio.sleep(3600)
+                finally:
+                    _client = None
         except aiomqtt.MqttError:
             if _running:
                 await asyncio.sleep(delay)
@@ -197,6 +202,49 @@ def _printer_dict(pr):
     return pr.to_dict() if hasattr(pr, "to_dict") else pr
 
 
+# ── status_update subscriber ─────────────────────────────────────────────────
+# Transitions (state/connected/printing) go out immediately; every other
+# change is a numeric refresh and waits for NUMERIC_THROTTLE_S. A suppressed
+# update is simply not sent — the next status_update recomputes from the
+# live printer, so the freshest values win and nothing queues up.
+
+_IMMEDIATE = ("state", "connected", "printing")
+
+
+class _Sent:
+    __slots__ = ("json", "ts")
+    def __init__(self):
+        self.json = None
+        self.ts = 0.0
+
+
+_published: dict = {}       # printer_id -> _Sent (what the topic holds right now)
+_client = None              # the live aiomqtt client, set while connected
+
+
+async def on_status(payload: dict) -> None:
+    pid = payload.get("printer_id")
+    d = payload.get("printer") or {}
+    if not pid or not d or _client is None:
+        return
+    fresh = bridge_state(d)
+    sent = _published.setdefault(pid, _Sent())
+    if sent.json is None:
+        await _publish_state(pid, fresh)        # first sight after (re)connect
+        return
+    changed = {k for k in fresh if fresh[k] != sent.json.get(k)}
+    if changed and (any(k in _IMMEDIATE for k in changed)
+                    or time.monotonic() - sent.ts >= NUMERIC_THROTTLE_S):
+        await _publish_state(pid, fresh)
+
+
+async def _publish_state(pid: str, fresh: dict) -> None:
+    await _client.publish(_state_topic(pid), json.dumps(fresh), retain=True)
+    sent = _published.setdefault(pid, _Sent())
+    sent.json = fresh
+    sent.ts = time.monotonic()
+
+
 async def _announce(client) -> None:
     """On connect: availability + per-printer discovery and retained state."""
     await client.publish(BRIDGE_AVAILABILITY, "online", retain=True)
@@ -204,7 +252,10 @@ async def _announce(client) -> None:
         d = _printer_dict(pr)
         for topic, payload in _discovery_messages(pid, d):
             await client.publish(topic, payload, retain=True)
-        await client.publish(_state_topic(pid), json.dumps(bridge_state(d)), retain=True)
+        fresh = bridge_state(d)
+        await client.publish(_state_topic(pid), json.dumps(fresh), retain=True)
+        sent = _published.setdefault(pid, _Sent())
+        sent.json, sent.ts = fresh, time.monotonic()
 
 
 async def ensure_started():

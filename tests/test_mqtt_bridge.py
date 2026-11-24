@@ -6,12 +6,14 @@ connect/publish log. See docs/adr-mqtt-bridge.md.
 """
 
 
+import asyncio
 import json
 
 import pytest
 
 import fake_mqtt
 import mqtt_bridge
+import state
 from config import set as config_set
 
 
@@ -20,9 +22,19 @@ async def broker(monkeypatch):
     b = fake_mqtt.FakeBroker()
     await b.start()
     config_set("mqtt.url", f"mqtt://127.0.0.1:{b.port}")
+    monkeypatch.setattr(mqtt_bridge, "_published", {})
+    monkeypatch.setattr(mqtt_bridge, "_client", None)
     yield b
     await mqtt_bridge.stop_and_clear()
     await b.stop()
+
+
+async def _wait_for_publish_after(broker, topic, n, timeout=2.0):
+    """Wait until the broker has seen MORE than `n` publishes of `topic`."""
+    async def _poll():
+        while len(broker.payloads(topic)) <= n:
+            await asyncio.sleep(0.01)
+    await asyncio.wait_for(_poll(), timeout)
 
 
 async def test_ensure_started_connects_to_broker(broker):
@@ -108,3 +120,56 @@ async def test_state_topic_zeroes_temps_for_an_offline_printer(broker, monkeypat
     msg = await broker.wait_for_publish("spooler/p1/state")
     s = json.loads(msg.payload)
     assert (s["nozzle_temp"], s["nozzle_target"], s["bed_temp"]) == (0, 0, 0)
+
+
+# ── status_update fan-out: transitions immediate, numerics throttled ────────
+
+async def test_status_update_republishes_on_a_state_transition(broker, monkeypatch):
+    pr = _register_printer(monkeypatch)
+    await mqtt_bridge.ensure_started()
+    first = await broker.wait_for_publish("spooler/p1/state")
+    assert json.loads(first.payload)["state"] == "offline"    # announce's initial state
+
+    pr.connected = True                                        # → "idle": a transition
+    n = len(broker.payloads("spooler/p1/state"))
+    state.publish("status_update", printer_id="p1", printer=pr.to_dict())
+    await _wait_for_publish_after(broker, "spooler/p1/state", n)
+    assert json.loads(broker.payloads("spooler/p1/state")[-1])["state"] == "idle"
+
+
+async def test_numeric_changes_are_throttled_to_the_window(broker, monkeypatch):
+    monkeypatch.setattr(mqtt_bridge, "NUMERIC_THROTTLE_S", 0.2)
+    pr = _register_printer(monkeypatch, TempOfNozzle=210)
+    pr.connected = True
+    await mqtt_bridge.ensure_started()
+    await broker.wait_for_publish("spooler/p1/state")          # announce
+    n = len(broker.payloads("spooler/p1/state"))
+
+    pr.status = {"PrintInfo": {"CurrentLayer": 12, "TotalLayer": 100, "RemainTime": 300},
+                 "TempOfNozzle": 215}                          # numeric-only change
+    state.publish("status_update", printer_id="p1", printer=pr.to_dict())
+    await asyncio.sleep(0.05)
+    assert len(broker.payloads("spooler/p1/state")) == n       # suppressed inside the window
+
+    await asyncio.sleep(0.25)                                  # past the window: the next
+    pr.status = {"PrintInfo": {"CurrentLayer": 12, "TotalLayer": 100, "RemainTime": 300},
+                 "TempOfNozzle": 218}                          # update flushes the latest
+    state.publish("status_update", printer_id="p1", printer=pr.to_dict())
+    await _wait_for_publish_after(broker, "spooler/p1/state", n)
+    assert json.loads(broker.payloads("spooler/p1/state")[-1])["nozzle_temp"] == 218
+
+
+async def test_a_transition_is_never_throttled_even_inside_the_window(broker, monkeypatch):
+    monkeypatch.setattr(mqtt_bridge, "NUMERIC_THROTTLE_S", 60)
+    pr = _register_printer(monkeypatch)
+    pr.connected = True
+    await mqtt_bridge.ensure_started()
+    await broker.wait_for_publish("spooler/p1/state")
+    n = len(broker.payloads("spooler/p1/state"))
+
+    pr.status = {"PrintInfo": {"Status": 2, "Filename": "a.gcode",
+                               "CurrentLayer": 1, "TotalLayer": 100}}   # → printing
+    state.publish("status_update", printer_id="p1", printer=pr.to_dict())
+    await _wait_for_publish_after(broker, "spooler/p1/state", n)
+    assert json.loads(broker.payloads("spooler/p1/state")[-1])["printing"] is True
+

@@ -9,6 +9,7 @@ printer objects look them up via state.printers.
 
 import dataset
 import job_queue
+import mqtt_bridge
 import state
 
 
@@ -25,6 +26,16 @@ def wire() -> None:
     _wire_job_queue()
     _wire_auto_light()
     _wire_notify()
+    _wire_mqtt_bridge()
+
+
+def _wire_mqtt_bridge() -> None:
+    """The MQTT bridge is a channel like the others: it subscribes instead of
+    being called from the printer core (ADR-0001 + ADR-0002)."""
+    async def status(payload: dict) -> None:
+        await mqtt_bridge.on_status(payload)
+
+    state.subscribe("status_update", status)
 
 
 def _wire_dataset() -> None:
