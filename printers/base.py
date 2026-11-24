@@ -1062,12 +1062,16 @@ class PrinterConnection:
             self._reset_per_print_extrusion()
             self._emit("print_started", f"{self.name} — Print started",
                        pi.get("Filename") or "A print has started.")
+            # Bus fan-out for channels. _emit still notifies directly until
+            # the notify channel migrates (ADR-0002); this publish is the
+            # event the bus channels read.
+            state.publish("print_started", printer_id=self.id, printer=self.to_dict(),
+                          data={"filename": pi.get("Filename") or ""})
             asyncio.create_task(self._auto_light(True))
             self._acct = PrintAccounting(current_spool=self._tray_spool(), filename=pi.get("Filename", ""),
                                          started_at=self._print_start_time)
             self._save_accounting(force=True)
             asyncio.create_task(self._capture_start_spool(self._acct))
-            asyncio.create_task(dataset.capture_before_print(self, pi))
             try:
                 job_queue.print_started(self.id)
             except Exception as e:
