@@ -7,6 +7,7 @@ import pytest
 
 import config
 import spaghetti
+import state
 from spaghetti import Watch
 
 S = {"threshold": 50, "frames": 3}
@@ -102,13 +103,20 @@ def test_card_status_follows_the_checks(monkeypatch):
         def _decoded_printinfo(self): return {"Status": self.status_code}
         async def _camera_picture(self, max_age_s=0): return b"jpeg"
         async def _broadcast_state(self): pass
-        def _emit(self, *a, **k): self.emitted.append(a[0])
+        def to_dict(self): return {"name": self.name}
 
     features.set_enabled("spaghetti_detection", True)
     p, answers = P(), []
+    p.emitted = []
+    state.subscribe("spaghetti", lambda payload: p.emitted.append(payload["event"]))
     monkeypatch.setattr(spaghetti, "ask_detector", lambda jpeg, s: answers.pop(0))
     spaghetti._status.clear(); spaghetti._watches.clear()
-    run = lambda: asyncio.run(spaghetti.check_printer(p, {"threshold": 50, "frames": 2}))
+
+    async def _one():
+        await spaghetti.check_printer(p, {"threshold": 50, "frames": 2})
+        await asyncio.sleep(0)          # let fire-and-forget bus dispatches run
+
+    run = lambda: asyncio.run(_one())
 
     answers.append([]);                        run(); assert spaghetti.status_for("p1")["state"] == "ok"
     answers.append([["failure", 0.9, []]]);    run(); assert spaghetti.status_for("p1")["state"] == "suspect"
