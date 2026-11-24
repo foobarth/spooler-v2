@@ -58,10 +58,10 @@ SENSORS = [
     ("layer",            "sensor", "Layer",              None, None,          "measurement", False, None),
     ("total_layer",      "sensor", "Total layers",       None, None,          "measurement", False, None),
     ("time_remaining",   "sensor", "Time remaining",     "s",  None,          "measurement", False, None),
-    ("filament_used_mm", "sensor", "Filament used",      "mm", None,          "measurement", False, None),
-    ("filament_used_g",  "sensor", "Filament used",      "g",  None,          "measurement", False, None),
+    ("filament_mm",      "sensor", "Filament used",      "mm", None,          "measurement", False, None),
+    ("filament_g",       "sensor", "Filament used",      "g",  None,          "measurement", False, None),
     ("speed_factor",     "sensor", "Speed factor",       "%",  None,          "measurement", False, None),
-    ("firmware",         "sensor", "Firmware",           None, None,          None,          True,  "diagnostic"),
+    ("firmware_version", "sensor", "Firmware",           None, None,          None,          True,  "diagnostic"),
 ]
 
 BINARY_SENSORS = [("connected", "Connected"), ("printing", "Printing")]
@@ -131,56 +131,31 @@ def _discovery_messages(pid: str, d: dict):
         yield _discovery_topic("binary_sensor", pid, key), json.dumps(payload)
 
 
-# ── normalized state extraction ──────────────────────────────────────────────
-# ports of the frontend's rules so HA sees exactly what the UI sees:
-# app-render.js's key fallback chains, app-core.js's getProgress(), and
-# classify_display_state's value already arrive via to_dict().
-
-def _first_num(d: dict, *keys, default=None):
-    for k in keys:
-        v = d.get(k)
-        if isinstance(v, (int, float)):
-            return v
-    return default
-
-
-def _progress(pi: dict):
-    if pi.get("TotalTicks") == 100:
-        return max(0, min(100, round(pi.get("CurrentTicks") or 0)))
-    if (pi.get("TotalLayer") or 0) > 0 and (pi.get("CurrentLayer") or 0) > 0:
-        return min(100, round((pi["CurrentLayer"] / pi["TotalLayer"]) * 100))
-    if (pi.get("TotalTicks") or 0) > 0 and pi.get("CurrentTicks") is not None:
-        return min(100, round((pi["CurrentTicks"] / pi["TotalTicks"]) * 100))
-    return None
-
+# ── state projection ─────────────────────────────────────────────────────────
+# All protocol normalization (key fallback chains, progress rules) lives in
+# printers/base.py to_dict() — the bridge owns none. This is just a whitelist
+# of what the bridge publishes, plus one derived flag.
 
 def bridge_state(printer: dict) -> dict:
-    """Normalize a printer's to_dict() into the bridge's flat state dict.
-
-    Input is the shape http_handler sends browsers: status keys differ per
-    protocol (CC1 SDCP vs CC2/Prusa/Moonraker), so fall back the same way
-    the frontend does. progress is None when the printer reports nothing
-    usable; numerics default to 0 like the UI's "!connected ? 0" rule."""
-    st = printer.get("status") or {}
-    pi = st.get("PrintInfo") or {}
+    """Thin projection of a printer's to_dict() for the state topic."""
     return {
         "state":            printer.get("state"),
         "connected":        bool(printer.get("connected")),
         "printing":         printer.get("state") == "printing",
-        "nozzle_temp":      _first_num(st, "TempOfNozzle", "NozzleTemp", default=0),
-        "nozzle_target":    _first_num(st, "TempTargetNozzle", "NozzleTempTarget", default=0),
-        "bed_temp":         _first_num(st, "TempOfHotbed", "BedTemp", default=0),
-        "bed_target":       _first_num(st, "TempTargetHotbed", "BedTempTarget", default=0),
-        "chamber_temp":     _first_num(st, "TempOfBox", "ChamberTemp", default=0),
-        "chamber_target":   _first_num(st, "TempTargetBox", default=0),
-        "progress":         _progress(pi),
-        "layer":            pi.get("CurrentLayer") or 0,
-        "total_layer":      pi.get("TotalLayer") or 0,
-        "time_remaining":   pi.get("RemainTime") or 0,
-        "filament_used_mm": printer.get("filament_mm"),
-        "filament_used_g":  printer.get("filament_g"),
-        "speed_factor":     _first_num(st, "SpeedFactor", default=100),
-        "firmware":         printer.get("firmware_version"),
+        "nozzle_temp":      printer.get("nozzle_temp"),
+        "nozzle_target":    printer.get("nozzle_target"),
+        "bed_temp":         printer.get("bed_temp"),
+        "bed_target":       printer.get("bed_target"),
+        "chamber_temp":     printer.get("chamber_temp"),
+        "chamber_target":   printer.get("chamber_target"),
+        "progress":         printer.get("progress"),
+        "layer":            printer.get("layer"),
+        "total_layer":      printer.get("total_layer"),
+        "time_remaining":   printer.get("time_remaining"),
+        "filament_mm":      printer.get("filament_mm"),
+        "filament_g":       printer.get("filament_g"),
+        "speed_factor":     printer.get("speed_factor"),
+        "firmware_version": printer.get("firmware_version"),
     }
 
 
