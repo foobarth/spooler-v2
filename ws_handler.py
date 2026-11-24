@@ -9,6 +9,8 @@ import uuid
 
 import printer_actions
 import state
+import buttons
+import features
 from auth import AUTH_ENABLED, _parse_sid, _session_user, _validate_session
 import users
 
@@ -48,6 +50,9 @@ ACTION_PERMISSIONS = {
     "move_axis": "printer.advanced", "home": "printer.advanced",
     "auto_level": "printer.advanced", "heaters_off": "printer.advanced",
     "pid_calibrate": "printer.advanced", "shaper_calibrate": "printer.advanced",
+    # Webhook buttons
+    "list_buttons": "view", "run_button": "buttons.trigger",
+    "save_button": "settings.manage", "delete_button": "settings.manage",
 }
 DEFAULT_ACTION_PERMISSION = "printer.control"
 from discovery import discover_cc2_printers, discover_printers
@@ -156,6 +161,71 @@ async def _dispatch_printer_action(action, printer, msg) -> str | None:
     if action == "shaper_calibrate":
         return await printer_actions.shaper_calibrate(printer)
     return None
+
+
+async def _handle_button_action(ws, action, msg, printer_id, loop) -> None:
+    """Webhook buttons: list, configure, and fire. Feature-gated; run_button
+    and the CRUD responses broadcast the list so every client stays current."""
+    if not features.is_enabled("webhook_buttons"):
+        await ws.send(json.dumps({"type": "error", "message": "Webhook buttons are turned off"}))
+        return
+
+    if action == "list_buttons":
+        full = _ws_has(ws, "settings.manage")
+        payload = buttons.list_buttons()
+        await ws.send(json.dumps({"type": "buttons", "buttons": [
+            (b if full else buttons.public_view(b)) for b in payload]}))
+        return
+
+    if action == "save_button":
+        try:
+            fields = {
+                "label": msg.get("label"), "url": msg.get("url"),
+                "method": msg.get("method") or "POST",
+                "body": msg.get("body"), "headers": msg.get("headers"),
+                "when": msg.get("when") or "any",
+                "confirm": bool(msg.get("confirm")),
+                "printers": msg.get("printers") or "*",
+            }
+            if msg.get("id"):
+                b = buttons.update_button(msg["id"], **fields)
+            else:
+                b = buttons.add_button(**fields)
+        except ValueError as e:
+            await ws.send(json.dumps({"type": "error", "message": str(e)}))
+            return
+        await ws.send(json.dumps({"type": "buttons_saved", "button": b}))
+        await state.broadcast_to_browsers({"type": "buttons", "buttons": buttons.list_buttons()})
+        return
+
+    if action == "delete_button":
+        buttons.remove_button(msg.get("button_id") or "")
+        await ws.send(json.dumps({"type": "info", "message": "Button removed"}))
+        await state.broadcast_to_browsers({"type": "buttons", "buttons": buttons.list_buttons()})
+        return
+
+    # run_button
+    b = buttons.get_button(msg.get("button_id") or "")
+    if not b:
+        await ws.send(json.dumps({"type": "error", "message": "Unknown button"}))
+        return
+    if printer_id:
+        printer = state.printers.get(printer_id)
+        if not printer or not _ws_can_see(ws, printer.id):
+            await ws.send(json.dumps({"type": "error", "message": "Printer not found"}))
+            return
+        if b.get("printers") != "*" and printer_id not in b["printers"]:
+            await ws.send(json.dumps({"type": "error", "message": "This button is not for this printer"}))
+            return
+    elif b.get("when") == "idle":
+        await ws.send(json.dumps({"type": "error",
+                                  "message": "This button needs a printer context to check the idle guard"}))
+        return
+    else:
+        printer = None
+    res = await loop.run_in_executor(None, buttons.fire_button, b, printer, _ws_user(ws))
+    await ws.send(json.dumps({"type": "button_result", "button_id": b["id"],
+                              "label": b.get("label"), **res}))
 
 
 async def handle_browser_message(ws, raw: str) -> None:
@@ -291,6 +361,10 @@ async def handle_browser_message(ws, raw: str) -> None:
             loop.run_in_executor(None, p._update_filament_density)
             if spool_id is not None:
                 loop.run_in_executor(None, spoolman_set_location, spool_id, pid)
+        return
+
+    if action in ("list_buttons", "save_button", "delete_button", "run_button"):
+        await _handle_button_action(ws, action, msg, printer_id, loop)
         return
 
     if not printer or not _ws_can_see(ws, printer.id):

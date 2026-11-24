@@ -79,6 +79,12 @@ FEATURES: dict = {
         description="Set temperatures and fan speeds, move and home the axes from a panel on each printer card. "
                     "You control the printer directly: changes happen immediately. Only for printers that support it.",
     ),
+    "webhook_buttons": Feature(
+        key="webhook_buttons", name="Webhook buttons", default=True,
+        requires_auth=True,
+        description="Admin-defined buttons on printer cards and in the menu that send an HTTP request when "
+                    "pressed — for example a Home Assistant webhook that toggles the smart plug powering a printer.",
+    ),
     "print_snapshot": Feature(
         key="print_snapshot", name="Print pictures", default=True,
         description="Take a camera picture when a print ends and keep it with the print in the history.",
