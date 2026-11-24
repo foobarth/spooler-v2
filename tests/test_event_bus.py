@@ -120,3 +120,49 @@ def test_publish_without_a_loop_and_without_a_remembered_loop_logs_and_survives(
     state.subscribe("print_started", lambda p: pytest.fail("should not be called"))
     state.publish("print_started", printer_id="p1")
     assert "dropped" in capsys.readouterr().out
+
+
+# ── awaited dispatch (machine-coupled consumers) ─────────────────────────────
+
+async def test_publish_now_awaits_every_subscriber_before_returning():
+    got = []
+
+    async def slow(payload):
+        await asyncio.sleep(0.05)
+        got.append("done")
+
+    state.subscribe("print_ended", slow)
+    t0 = time.monotonic()
+    await state.publish_now("print_ended", printer_id="p1", data={"end_state": "complete"})
+    assert got == ["done"]
+    assert time.monotonic() - t0 >= 0.05
+
+
+async def test_publish_now_runs_subscribers_sequentially_in_subscription_order():
+    order = []
+
+    async def first(payload):
+        order.append("first-start")
+        await asyncio.sleep(0.02)
+        order.append("first-end")
+
+    def second(payload):
+        order.append("second")
+
+    state.subscribe("print_ended", first)
+    state.subscribe("print_ended", second)
+    await state.publish_now("print_ended", printer_id="p1")
+    assert order == ["first-start", "first-end", "second"]
+
+
+async def test_publish_now_isolates_errors_but_runs_the_remaining_subscribers(capsys):
+    got = []
+
+    def bad(payload):
+        raise RuntimeError("exploded")
+
+    state.subscribe("print_ended", bad)
+    state.subscribe("print_ended", lambda p: got.append("survivor"))
+    await state.publish_now("print_ended", printer_id="p1")     # must not raise
+    assert got == ["survivor"]
+    assert "exploded" in capsys.readouterr().out

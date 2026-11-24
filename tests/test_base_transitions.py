@@ -6,6 +6,7 @@ and send_cmd() are never called, only the status-transition machinery, so the
 abstract methods raising NotImplementedError never matters here.
 """
 
+import asyncio
 import time
 
 import pytest
@@ -420,12 +421,19 @@ def _queue_job_printing_on(printer_id):
     return job_queue
 
 
+async def _drain():
+    """Fire-and-forget bus dispatches run on the next loop step; one tick is
+    enough for the sync subscribers the queue tests assert on."""
+    await asyncio.sleep(0)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("end_code, status", [(9, "done"), (14, "error"), (8, "stopped")])
 async def test_the_queue_job_on_the_printer_follows_the_print(printer, end_code, status):
     job_queue = _queue_job_printing_on("pid1")
     _set_status(printer, 2, TotalExtrusion=0, Filename="a.gcode")
     await printer._check_print_transition()
+    await _drain()      # print_started fans out fire-and-forget; let the dispatch run
     assert job_queue._load()[0]["print_seen"] is True and job_queue._load()[0]["status"] == "printing"
     if end_code == 14:
         printer.state_reason = {"kind": "error", "initiated_by": "printer", "code": "42", "category": "unknown",
@@ -444,5 +452,5 @@ async def test_a_print_that_ended_while_spooler_was_off_still_finishes_the_queue
     save_active("pid1", PrintAccounting(filename="a.gcode", started_at=time.time() - 600))
     printer._last_print_status = None        # Spooler just started
     _set_status(printer, 9, TotalExtrusion=400, Filename="a.gcode")
-    await printer._check_print_transition()
+    await printer._check_print_transition()   # publish_now inside: no drain needed
     assert job_queue._load()[0]["status"] == "done"

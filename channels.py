@@ -8,6 +8,7 @@ printer objects look them up via state.printers.
 """
 
 import dataset
+import job_queue
 import state
 
 
@@ -16,6 +17,7 @@ def wire() -> None:
     the subscription set is reset first."""
     state.reset_subscriptions()
     _wire_dataset()
+    _wire_job_queue()
 
 
 def _wire_dataset() -> None:
@@ -27,3 +29,15 @@ def _wire_dataset() -> None:
         await dataset.capture_before_print(pr, pi)
 
     state.subscribe("print_started", before_print)
+
+
+def _wire_job_queue() -> None:
+    async def started(payload: dict) -> None:
+        job_queue.print_started(payload["printer_id"])
+
+    async def ended(payload: dict) -> None:
+        data = payload["data"]
+        job_queue.print_ended(payload["printer_id"], data["end_state"], data.get("error"))
+
+    state.subscribe("print_started", started)
+    state.subscribe("print_ended", ended)
