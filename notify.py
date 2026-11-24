@@ -16,6 +16,7 @@ from datetime import datetime, UTC
 
 import notifiers
 import push
+import state
 from features import is_enabled
 from push import load_notif_settings
 
@@ -48,6 +49,96 @@ MIN_INTERVAL_S = 10 * 60
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="notify")
 _last_sent: dict = {}
 _lock = threading.Lock()
+
+
+# ── message registry (ADR-0002) ──────────────────────────────────────────────
+# The only place prose exists for printer events. Templates are data: a
+# future translation is a second dict plus a language selector, nothing
+# else. {printer} is the printer's name; other fields are the event's data
+# facts. Where the old inline prose had a fallback ("A print has started."
+# when no filename), the entry is a small function — the literals inside it
+# are still translatable strings.
+
+def _reason_text(reason: dict) -> str:
+    parts = []
+    if reason.get("message"):
+        parts.append(reason["message"])
+    if reason.get("code") not in (None, ""):
+        parts.append(f"(code {reason['code']})")
+    if reason.get("action"):
+        parts.append(reason["action"])
+    return " ".join(parts)
+
+
+MESSAGES = {
+    "print_started":   {"title": "{printer} — Print started",
+                        "body": lambda d: d.get("filename") or "A print has started."},
+    "print_complete":  {"title": "{printer} — Print complete",
+                        "body": lambda d: (f"{d['filename']} is done." if d.get("filename")
+                                           else "Your print is complete.")},
+    "print_cancelled": {"title": "{printer} — Print cancelled",
+                        "body": lambda d: (f"{d['filename']} was cancelled." if d.get("filename")
+                                           else "Your print was cancelled.")},
+    "print_error":     {"title": "{printer} — Print error",
+                        "body": lambda d: _reason_text(d.get("reason") or {}) or "The printer reported an error."},
+    "print_paused":    {"title": "{printer} — Print paused",
+                        "body": lambda d: _reason_text(d.get("reason") or {}) or "The print was paused."},
+    "filament_runout": {"title": "{printer} — Filament ran out",
+                        "body": lambda d: _reason_text(d.get("reason") or {}) or "Load filament and resume."},
+    "printer_fault":   {"title": "{printer} — Printer fault",
+                        "body": lambda d: _reason_text(d.get("reason") or {}) or "The printer reported a fault."},
+    "printer_online":  {"title": "{printer} — Printer online",
+                        "body": "The printer is connected again."},
+    "printer_offline": {"title": "{printer} — Printer offline",
+                        "body": "No contact with the printer for {minutes:g} minutes."},
+    "nozzle_hot_idle": {"title": "{printer} — Nozzle hot",
+                        "body": lambda d: f"Nozzle is {round(d['temp'])}°C while idle."},
+    "nozzle_overheat": {"title": "{printer} — Nozzle overheat",
+                        "body": lambda d: f"Nozzle is {round(d['temp'])}°C during print."},
+    "layer_reached":   {"title": "{printer} — Layer {target} reached",
+                        "body": "Currently on layer {layer}."},
+    "firmware_changed": {"title": "{printer} — Firmware changed",
+                         "body": lambda d: (f"{d['from']} → {d['to']}."
+                                            + (" It has not been tested with this version of Spooler."
+                                               if d.get("tested") is False else ""))},
+    "service_due":     {"title": "{printer} — Service due: {task}",
+                        "body": "{since:g} {unit} since last time (every {interval} {unit})."},
+    "spaghetti":       {"title": "{printer} — Possible print failure",
+                        "body": "The detector thinks this print may be failing (spaghetti). Check the printer."},
+}
+
+
+def _render(event: str, printer_name: str, data: dict) -> tuple[str, str]:
+    m = MESSAGES[event]
+    fields = {"printer": printer_name, **data}
+    title = m["title"].format(**fields)
+    body = m["body"](data) if callable(m["body"]) else m["body"].format(**fields)
+    return title, body
+
+
+# ── bus subscriber (ADR-0002): the notification channel reads the events ─────
+
+async def _on_event(payload: dict) -> None:
+    event = payload["event"]
+    if not is_enabled("notifications") or not is_event_on(event):
+        return
+    data = dict(payload["data"])
+    pr = state.printers.get(payload["printer_id"])
+    name = (((payload.get("printer") or {}).get("name")) or getattr(pr, "name", "")
+            or payload["printer_id"])
+    image = None
+    if wants_image(event) and pr is not None:
+        image = await pr._camera_picture()
+    title, body = _render(event, name, data)
+    notify(Notification(event, payload["printer_id"], title, body, image,
+                        data.pop("priority", "default"), name, data))
+
+
+def wire() -> None:
+    """Subscribe the notification channel to every event it renders.
+    Called from channels.wire() at startup."""
+    for event in MESSAGES:
+        state.subscribe(event, _on_event)
 
 
 @dataclass

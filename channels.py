@@ -12,6 +12,11 @@ import job_queue
 import state
 
 
+def _wire_notify() -> None:
+    import notify
+    notify.wire()
+
+
 def wire() -> None:
     """(Re)build the channel subscriptions from scratch. Safe to call again:
     the subscription set is reset first."""
@@ -19,6 +24,7 @@ def wire() -> None:
     _wire_dataset()
     _wire_job_queue()
     _wire_auto_light()
+    _wire_notify()
 
 
 def _wire_dataset() -> None:

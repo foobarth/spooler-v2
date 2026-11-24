@@ -13,6 +13,7 @@ import notifiers
 import notify
 import push
 import snapshot
+import state
 from notify import Notification
 from printers.base import PrinterConnection
 
@@ -516,3 +517,94 @@ def test_outgoing_requests_do_not_use_the_default_python_user_agent(monkeypatch)
     notifiers._request("https://example.com/hook", headers={"user-agent": "Mine"})
     assert seen[0].get_header("User-agent") == "Spooler"
     assert seen[1].get_header("User-agent") == "Mine"
+
+
+# ── message registry: every event renders the exact prose that used to be
+# built inline in printers/base.py (verbatim parity — behavior must not
+# change in the migration, ADR-0002). ─────────────────────────────────────────
+
+REASON = {"kind": "error", "category": "filament_runout", "code": 42, "message": "Nozzle thermal runaway",
+          "action": "Check the filament sensor", "initiated_by": "printer", "raw": {}, "since": "x"}
+
+RENDER_CASES = [
+    ("print_started", "Bench", {"filename": "benchy.gcode"}, ("Bench — Print started", "benchy.gcode")),
+    ("print_started", "Bench", {}, ("Bench — Print started", "A print has started.")),
+    ("print_complete", "Bench", {"filename": "benchy.gcode"}, ("Bench — Print complete", "benchy.gcode is done.")),
+    ("print_complete", "Bench", {}, ("Bench — Print complete", "Your print is complete.")),
+    ("print_cancelled", "Bench", {"filename": "b.gcode"}, ("Bench — Print cancelled", "b.gcode was cancelled.")),
+    ("print_cancelled", "Bench", {}, ("Bench — Print cancelled", "Your print was cancelled.")),
+    ("print_error", "Bench", {"reason": REASON},
+     ("Bench — Print error", "Nozzle thermal runaway (code 42) Check the filament sensor")),
+    ("print_error", "Bench", {}, ("Bench — Print error", "The printer reported an error.")),
+    ("print_paused", "Bench", {"reason": REASON},
+     ("Bench — Print paused", "Nozzle thermal runaway (code 42) Check the filament sensor")),
+    ("print_paused", "Bench", {}, ("Bench — Print paused", "The print was paused.")),
+    ("filament_runout", "Bench", {"reason": REASON},
+     ("Bench — Filament ran out", "Nozzle thermal runaway (code 42) Check the filament sensor")),
+    ("filament_runout", "Bench", {}, ("Bench — Filament ran out", "Load filament and resume.")),
+    ("printer_fault", "Bench", {"reason": REASON},
+     ("Bench — Printer fault", "Nozzle thermal runaway (code 42) Check the filament sensor")),
+    ("printer_fault", "Bench", {}, ("Bench — Printer fault", "The printer reported a fault.")),
+    ("printer_online", "Bench", {}, ("Bench — Printer online", "The printer is connected again.")),
+    ("printer_offline", "Bench", {"minutes": 7.5},
+     ("Bench — Printer offline", "No contact with the printer for 7.5 minutes.")),
+    ("nozzle_hot_idle", "Bench", {"temp": 60.4}, ("Bench — Nozzle hot", "Nozzle is 60°C while idle.")),
+    ("nozzle_overheat", "Bench", {"temp": 270.5}, ("Bench — Nozzle overheat", "Nozzle is 270°C during print.")),
+    ("layer_reached", "Bench", {"layer": 12, "target": 10}, ("Bench — Layer 10 reached", "Currently on layer 12.")),
+    ("firmware_changed", "Bench", {"from": "1.0", "to": "1.1", "tested": True},
+     ("Bench — Firmware changed", "1.0 → 1.1.")),
+    ("firmware_changed", "Bench", {"from": "1.0", "to": "1.1", "tested": False},
+     ("Bench — Firmware changed", "1.0 → 1.1. It has not been tested with this version of Spooler.")),
+    ("service_due", "Bench", {"task": "Oil the rods", "since": 10.0, "unit": "h", "interval": 250},
+     ("Bench — Service due: Oil the rods", "10 h since last time (every 250 h).")),
+    ("spaghetti", "Bench", {}, ("Bench — Possible print failure",
+                                "The detector thinks this print may be failing (spaghetti). Check the printer.")),
+]
+
+
+@pytest.mark.parametrize("event,name,data,expected", RENDER_CASES)
+def test_registry_renders_the_exact_previous_prose(event, name, data, expected):
+    assert notify._render(event, name, data) == expected
+
+
+def test_registry_covers_every_event_the_channel_knows():
+    # spool_low is excluded: spoolman emits it directly (channel-side, its
+    # own Notification) — it never rode printer._emit and never will ride
+    # the bus's printer events.
+    assert set(notify.MESSAGES) == set(notify.EVENT_SETTING) - {"spool_low"}
+
+
+# ── bus subscriber ───────────────────────────────────────────────────────────
+
+@pytest.fixture
+def wired_and_notifying(monkeypatch):
+    """Wire the notify channel; record the Notifications it builds instead
+    of delivering them."""
+    import channels
+    import state
+    monkeypatch.setattr(state, "_subscriptions", {})
+    channels.wire()
+    seen = []
+    monkeypatch.setattr(notify, "notify", lambda n: seen.append(n) or True)
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_subscriber_builds_the_notification_from_the_event(wired_and_notifying, monkeypatch):
+    seen = wired_and_notifying
+    monkeypatch.setattr(state, "printers", {"p1": type("P", (), {"name": "Bench"})()})
+    features.set_enabled("notifications", True)
+    _settings(started={"enabled": True})
+
+    await state.publish_now("print_started", printer_id="p1", data={"filename": "benchy.gcode"})
+    assert len(seen) == 1
+    n = seen[0]
+    assert (n.event, n.printer_id, n.title, n.body) == (
+        "print_started", "p1", "Bench — Print started", "benchy.gcode")
+
+
+@pytest.mark.asyncio
+async def test_subscriber_skips_events_switched_off(wired_and_notifying):
+    features.set_enabled("notifications", True)     # event itself stays off
+    await state.publish_now("print_started", printer_id="p1", data={})
+    assert wired_and_notifying == []
