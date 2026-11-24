@@ -287,7 +287,7 @@ def test_pause_from_printer_notifies_with_cause(printer):
     n = printer.captured[0]
     assert n.event == "print_paused" and n.title == "Bench — Print paused"
     assert "Hotend isn't heating" in n.body and "(code 103)" in n.body and "Check it." in n.body
-    assert n.extra["code"] == 103
+    assert n.extra["reason"]["code"] == 103
 
 
 def test_pause_started_from_spooler_is_silent(printer):
@@ -315,11 +315,11 @@ def test_error_without_known_cause_still_says_something(printer):
 @pytest.mark.asyncio
 async def test_emit_takes_camera_picture_when_asked(printer, monkeypatch):
     printer.camera_url = "http://cam/"
+    monkeypatch.setattr(state, "printers", {"pid1": printer})
     monkeypatch.setattr(notify, "wants_image", lambda event: True)
     import printers.base as base
     monkeypatch.setattr(base, "grab_jpeg", lambda url: b"\xff\xd8x\xff\xd9")
-    printer._emit("print_complete", "T", "B")
-    await asyncio.sleep(0.05)
+    await state.publish_now("print_complete", printer_id=printer.id, printer=printer.to_dict())
     assert printer.captured and printer.captured[0].image == b"\xff\xd8x\xff\xd9"
 
 
@@ -409,12 +409,19 @@ def test_notify_hands_off_to_worker_and_filters(hook, monkeypatch):
     assert not notify.notify(Notification("print_started", "p1", "T"))   # event off
 
 
+def _record_events(p):
+    """Record published event names at the bus: the printer publishes now,
+    it no longer calls _emit (ADR-0002)."""
+    for ev in notify.MESSAGES:
+        state.subscribe(ev, lambda payload, ev=ev, p=p: p.emitted.append(ev))
+
+
 def test_hot_nozzle_idle_warns_once_even_if_the_status_flickers():
     """Real CC2: ten of these arrived. A busy/preparing status between two idle ones must not re-arm it."""
     push.save_notif_settings({"nozzle_idle": {"enabled": True, "threshold": 40}})
     p = PrinterConnection("pid1", "10.0.0.5", "Bench")
     p.emitted = []
-    p._emit = lambda event, *a, **k: p.emitted.append(event)
+    _record_events(p)
 
     def at(status, nozzle):
         p.status = {"PrintInfo": {"Status": status}, "TempOfNozzle": nozzle}
@@ -432,7 +439,7 @@ def test_print_complete_is_announced_even_if_the_printer_is_busy_just_before_it_
     push.save_notif_settings({"finished": {"enabled": True}})
     p = PrinterConnection("pid1", "10.0.0.5", "Bench")
     p.emitted = []
-    p._emit = lambda event, *a, **k: p.emitted.append(event)
+    _record_events(p)
 
     def at(status):
         p.status = {"PrintInfo": {"Status": status, "Filename": "a.gcode"}}
@@ -449,7 +456,7 @@ def _layer_printer():
     push.save_notif_settings({"layer": {"enabled": True, "layer": 3}})
     p = PrinterConnection("pid1", "10.0.0.5", "Bench")
     p.emitted = []
-    p._emit = lambda event, *a, **k: p.emitted.append(event)
+    _record_events(p)
 
     def at(status, layer):
         p.status = {"PrintInfo": {"Status": status, "CurrentLayer": layer}}
@@ -488,7 +495,7 @@ def test_print_complete_and_layer_notices_work_for_the_cc1_printing_status():
     push.save_notif_settings({"finished": {"enabled": True}, "layer": {"enabled": True, "layer": 3}})
     p = PrinterConnection("pid1", "10.0.0.5", "Bench")
     p.emitted = []
-    p._emit = lambda event, *a, **k: p.emitted.append(event)
+    _record_events(p)
 
     def at(status, layer=0):
         p.status = {"PrintInfo": {"Status": status, "Filename": "a.gcode", "CurrentLayer": layer}}

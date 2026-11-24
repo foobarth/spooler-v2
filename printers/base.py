@@ -624,22 +624,6 @@ class PrinterConnection:
 
     # ── Internal helpers ───────────────────────────────────────────────────────
 
-    # ── Notifications ──────────────────────────────────────────────────────────
-
-    def _emit(self, event: str, title: str, body: str = "", priority: str = "default",
-              extra: dict | None = None) -> None:
-        """Queue a notification for `event` (see notify.EVENT_SETTING). Cheap
-        no-op when the event is off; grabs a camera picture first when the
-        event's setting asks for one. Safe to call from sync code inside the
-        event loop."""
-        if not notifylib.is_event_on(event):
-            return
-        try:
-            asyncio.get_running_loop().create_task(self._emit_async(event, title, body, priority, extra))
-        except RuntimeError:
-            notifylib.notify(notifylib.Notification(event, self.id, title, body, None, priority,
-                                                    self.name, extra or {}))
-
     async def _camera_picture(self, max_age_s: float = 20.0, force: bool = False) -> bytes | None:
         """One JPEG from the camera, or None (no camera, offline, timeout).
         A picture taken in the last few seconds is reused, so the end-of-print
@@ -710,45 +694,24 @@ class PrinterConnection:
             if not is_enabled("service_log"):
                 return
             for t in service.take_due(self.id):
-                self._emit("service_due", f"{self.name} — Service due: {t['name']}",
-                           f"{t['since']:g} {t['unit']} since last time (every {t['interval']} {t['unit']}).")
+                state.publish("service_due", printer_id=self.id, printer=self.to_dict(),
+                              data={"task": t["name"], "since": t["since"],
+                                    "unit": t["unit"], "interval": t["interval"]})
         except Exception as e:
             print(f"[Printer {self.name}] Service reminder skipped: {type(e).__name__}")
 
-    async def _emit_async(self, event, title, body, priority, extra) -> None:
-        image = None
-        if notifylib.wants_image(event):
-            image = await self._camera_picture()
-        notifylib.notify(notifylib.Notification(event, self.id, title, body, image, priority,
-                                                self.name, extra or {}))
-
-    def _reason_text(self, reason: dict) -> str:
-        parts = []
-        if reason.get("message"):
-            parts.append(reason["message"])
-        if reason.get("code") not in (None, ""):
-            parts.append(f"(code {reason['code']})")
-        if reason.get("action"):
-            parts.append(reason["action"])
-        return " ".join(parts)
-
     def _notify_reason(self, reason: dict) -> None:
-        """A new pause/error reason was just recorded: tell the user, with the
-        cause. Pauses started from Spooler itself aren't news."""
+        """A new pause/error reason was just recorded: publish it, with the
+        cause as facts. Pauses started from Spooler itself aren't news."""
         kind, cat = reason["kind"], reason.get("category")
         if kind == "pause" and reason.get("initiated_by") == "spooler":
             return
-        text = self._reason_text(reason)
-        extra = {"category": cat, "code": reason.get("code"), "initiated_by": reason.get("initiated_by")}
         if cat == "filament_runout" and kind in ("pause", "error"):
-            self._emit("filament_runout", f"{self.name} — Filament ran out", text or "Load filament and resume.",
-                       priority="high", extra=extra)
+            state.publish("filament_runout", printer_id=self.id, printer=self.to_dict(), data={"reason": reason, "priority": "high"})
         elif kind == "error":
-            self._emit("print_error", f"{self.name} — Print error", text or "The printer reported an error.",
-                       priority="urgent", extra=extra)
+            state.publish("print_error", printer_id=self.id, printer=self.to_dict(), data={"reason": reason, "priority": "urgent"})
         elif kind == "pause":
-            self._emit("print_paused", f"{self.name} — Print paused", text or "The print was paused.",
-                       priority="high", extra=extra)
+            state.publish("print_paused", printer_id=self.id, printer=self.to_dict(), data={"reason": reason, "priority": "high"})
 
     def _track_connection_for_notifications(self) -> None:
         """Delayed 'printer offline' and 'printer back online' notices."""
@@ -759,7 +722,7 @@ class PrinterConnection:
                 self._offline_task = None
             if getattr(self, "_offline_notified", False):
                 self._offline_notified = False
-                self._emit("printer_online", f"{self.name} — Printer online", "The printer is connected again.")
+                state.publish("printer_online", printer_id=self.id, printer=self.to_dict())
         elif getattr(self, "_offline_task", None) is None and not getattr(self, "_offline_notified", False):
             try:
                 self._offline_task = asyncio.get_running_loop().create_task(self._offline_after_delay())
@@ -779,8 +742,7 @@ class PrinterConnection:
         self._offline_task = None
         if not self.connected:
             self._offline_notified = True
-            self._emit("printer_offline", f"{self.name} — Printer offline",
-                       f"No contact with the printer for {minutes:g} minutes.", priority="high")
+            state.publish("printer_offline", printer_id=self.id, printer=self.to_dict(), data={"minutes": minutes, "priority": "high"})
 
     def _check_notifications(self) -> None:
         if not is_enabled("notifications"):
@@ -809,16 +771,14 @@ class PrinterConnection:
         if _print_ended and wanted("finished"):
             fname = pi.get("Filename", "")
             if status == 8:
-                self._emit("print_cancelled", f"{self.name} — Print cancelled",
-                           f"{fname} was cancelled." if fname else "Your print was cancelled.")
+                state.publish("print_cancelled", printer_id=self.id, printer=self.to_dict(), data={"filename": fname})
             else:
-                self._emit("print_complete", f"{self.name} — Print complete",
-                           f"{fname} is done." if fname else "Your print is complete.", extra={"filename": fname})
+                state.publish("print_complete", printer_id=self.id, printer=self.to_dict(), data={"filename": fname})
 
         if is_idle and wanted("nozzle_idle"):
             thr = s.get("nozzle_idle", {}).get("threshold", 50)
             if nozzle > thr and not ns["nozzle_idle_fired"]:
-                self._emit("nozzle_hot_idle", f"{self.name} — Nozzle hot", f"Nozzle is {round(nozzle)}°C while idle.")
+                state.publish("nozzle_hot_idle", printer_id=self.id, printer=self.to_dict(), data={"temp": nozzle})
                 ns["nozzle_idle_fired"] = True
             elif nozzle <= thr - 5:          # a few degrees of margin so a reading hovering at the limit can't repeat it
                 ns["nozzle_idle_fired"] = False
@@ -837,14 +797,14 @@ class PrinterConnection:
             if layer >= target and not ns["layer_fired"]:
                 # Spooler started in the middle of a print that is already past the layer: too late to announce it.
                 if ns["layer_seen"] is not None or layer <= target:
-                    self._emit("layer_reached", f"{self.name} — Layer {target} reached", f"Currently on layer {layer}.")
+                    state.publish("layer_reached", printer_id=self.id, printer=self.to_dict(), data={"layer": layer, "target": target})
                 ns["layer_fired"] = True
             ns["layer_seen"] = layer
 
         if is_printing and wanted("nozzle_printing"):
             thr = s.get("nozzle_printing", {}).get("threshold", 260)
             if nozzle > thr and not ns["nozzle_hot_fired"]:
-                self._emit("nozzle_overheat", f"{self.name} — Nozzle overheat", f"Nozzle is {round(nozzle)}°C during print.", priority="high")
+                state.publish("nozzle_overheat", printer_id=self.id, printer=self.to_dict(), data={"temp": nozzle, "priority": "high"})
                 ns["nozzle_hot_fired"] = True
             elif nozzle <= thr:
                 ns["nozzle_hot_fired"] = False
@@ -880,8 +840,8 @@ class PrinterConnection:
             print(f"[Printer {self.name}] Firmware {version}.{verdict}")
             return
         print(f"[Printer {self.name}] Firmware changed: {previous} -> {version}.{verdict}")
-        self._emit("firmware_changed", f"{self.name} — Firmware changed",
-                   f"{previous} → {version}.{verdict}", extra={"from": previous, "to": version, "tested": tested})
+        state.publish("firmware_changed", printer_id=self.id, printer=self.to_dict(),
+                      data={"from": previous, "to": version, "tested": tested})
 
     def _mark_seen(self) -> None:
         """Record that the printer itself just said something (a message
@@ -985,9 +945,8 @@ class PrinterConnection:
             "action":   hint.get("action") or "",
             "since":    time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
-        text = self._reason_text(self.standalone_fault)
-        self._emit("printer_fault", f"{self.name} — Printer fault", text or "The printer reported a fault.",
-                   priority="high", extra={"category": self.standalone_fault["category"], "code": code})
+        state.publish("printer_fault", printer_id=self.id, printer=self.to_dict(),
+                      data={"reason": self.standalone_fault, "priority": "high"})
 
     async def _check_print_transition(self) -> None:
         pi = self._decoded_printinfo()
@@ -1059,11 +1018,6 @@ class PrinterConnection:
             # transition, so adapters whose counters reset there would otherwise
             # debit the previous print's figure to this one.
             self._reset_per_print_extrusion()
-            self._emit("print_started", f"{self.name} — Print started",
-                       pi.get("Filename") or "A print has started.")
-            # Bus fan-out for channels. _emit still notifies directly until
-            # the notify channel migrates (ADR-0002); this publish is the
-            # event the bus channels read.
             state.publish("print_started", printer_id=self.id, printer=self.to_dict(),
                           data={"filename": pi.get("Filename") or ""})
             self._acct = PrintAccounting(current_spool=self._tray_spool(), filename=pi.get("Filename", ""),

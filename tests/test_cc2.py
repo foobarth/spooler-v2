@@ -4,6 +4,8 @@ import json
 
 import pytest
 
+import features
+import push
 from printers.cc2 import CC2Connection
 
 
@@ -443,10 +445,13 @@ def test_progress_ignores_reported_value_when_not_printing(printer):
 
 @pytest.fixture
 def quiet_emit(monkeypatch):
-    from printers.base import PrinterConnection
+    """Record the Notifications the notify channel builds from the bus
+    events (the migration's new path — formerly a patched _emit)."""
+    import notify
+    push.save_notif_settings({"error": {"enabled": True}})
+    features.set_enabled("notifications", True)
     emitted = []
-    monkeypatch.setattr(PrinterConnection, "_emit",
-                        lambda self, event, title, body="", priority="default", extra=None: emitted.append((event, title, body, extra)))
+    monkeypatch.setattr(notify, "notify", lambda n: emitted.append(n) or True)
     return emitted
 
 
@@ -456,9 +461,10 @@ def test_standalone_fault_noticed_while_idle(printer, quiet_emit):
     assert printer.standalone_fault["code"] == "704"
     assert printer.standalone_fault["message"] == "Leveling failed. Please try again."
     from printers.error_codes import lookup
-    assert quiet_emit == [("printer_fault", "Test CC2 — Printer fault",
-                            "Leveling failed. Please try again. (code 704) " + lookup(704)["action"],
-                            {"category": "leveling", "code": "704"})]
+    [(n)] = quiet_emit
+    assert n.event == "printer_fault" and n.title == "Test CC2 — Printer fault"
+    assert n.body == ("Leveling failed. Please try again. (code 704) " + lookup(704)["action"])
+    assert n.extra["reason"]["category"] == "leveling" and n.extra["reason"]["code"] == "704"
 
 
 def test_standalone_fault_does_not_renotify_the_same_code(printer, quiet_emit):

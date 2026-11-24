@@ -114,12 +114,14 @@ async def test_publish_from_a_thread_uses_the_remembered_loop():
     assert got == ["from-thread"] and results == [None]
 
 
-def test_publish_without_a_loop_and_without_a_remembered_loop_logs_and_survives(capsys):
-    # no asyncio loop running, remember_loop() never called: the event is
-    # dropped with a loud log line, publish itself never raises
-    state.subscribe("print_started", lambda p: pytest.fail("should not be called"))
+def test_publish_without_any_loop_falls_back_to_inline_dispatch():
+    # sync context, no remembered loop: subscribers still get the event,
+    # run to completion on a throwaway loop (the old _emit fallback's
+    # delivery guarantee)
+    got = []
+    state.subscribe("print_started", lambda p: got.append(p["event"]))
     state.publish("print_started", printer_id="p1")
-    assert "dropped" in capsys.readouterr().out
+    assert got == ["print_started"]
 
 
 # ── awaited dispatch (machine-coupled consumers) ─────────────────────────────

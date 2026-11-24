@@ -74,11 +74,20 @@ def publish(event: str, printer_id: str = "", printer: dict | None = None,
             _dispatched.add(task)
             task.add_done_callback(_dispatched.discard)
     except RuntimeError:
-        if _main_loop is None or _main_loop.is_closed():
-            print(f"[Events] no event loop; dropped {event} for {printer_id!r}")
+        if _main_loop is not None and not _main_loop.is_closed():
+            for cb in subs:
+                asyncio.run_coroutine_threadsafe(_dispatch(cb, payload), _main_loop)
             return
-        for cb in subs:
-            asyncio.run_coroutine_threadsafe(_dispatch(cb, payload), _main_loop)
+        # No loop anywhere (sync context: a plain script, a thread before the
+        # server started, a sync test). Run subscribers to completion inline
+        # on a throwaway loop — the delivery guarantee the old _emit fallback
+        # gave. Never dropped silently.
+        loop = asyncio.new_event_loop()
+        try:
+            for cb in subs:
+                loop.run_until_complete(_dispatch(cb, payload))
+        finally:
+            loop.close()
 
 
 async def publish_now(event: str, printer_id: str = "", printer: dict | None = None,
