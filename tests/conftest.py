@@ -17,6 +17,7 @@ import control
 import persistence
 import push
 import service
+import state
 
 
 @pytest.fixture(autouse=True)
@@ -58,4 +59,7 @@ def isolated_data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(job_queue, "QUEUE_DIR", tmp_path / "queue")
     monkeypatch.setattr(job_queue, "QUEUE_FILE", tmp_path / "queue" / "queue.json")
     monkeypatch.setattr(buttons, "BUTTONS_FILE", tmp_path / "buttons.json")
+    # Event bus: channels register in their own fixtures (via channels.wire());
+    # without this reset a subscription from one test file would fire in another's.
+    monkeypatch.setattr(state, "_subscriptions", {})
     yield tmp_path
