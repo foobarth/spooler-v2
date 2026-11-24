@@ -103,7 +103,7 @@ class FakeBroker:
                     topic, offset = _parse_string(body, 0)
                     if flags & 0x06:                    # QoS 1/2 — not supported
                         raise _ProtocolError(f"QoS > 0 publish on {topic!r}")
-                    payload, _ = _parse_binary(body, offset)
+                    payload = body[offset:]             # QoS 0: payload runs to the end
                     self.publishes.append(
                         RecordedPublish(topic, payload, retain=bool(flags & 0x01)))
                 elif ptype == 12:   # PINGREQ
