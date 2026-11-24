@@ -11,6 +11,7 @@ history.json
 tray_map.json
 auth.json
 api_tokens.json
+users.json
 spoolman_ledger.json
 active_prints.json
 integrations.json

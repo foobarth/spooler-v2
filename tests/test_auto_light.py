@@ -6,6 +6,7 @@ import pytest
 
 import persistence
 import printers.base as base
+import state
 from printers.base import PrinterConnection
 from printers.cc1 import CC1Connection
 from printers.cc2 import CC2Connection
@@ -24,6 +25,8 @@ def printer(monkeypatch):
         return True
     p.set_light = set_light
     p.calls = calls
+    # the light-ON side arrives via the bus, which looks printers up here
+    monkeypatch.setattr(state, "printers", {"pid1": p})
     return p
 
 

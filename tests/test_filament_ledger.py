@@ -259,7 +259,11 @@ def make_printer(monkeypatch):
         p = PrinterConnection("pid1", "10.0.0.5", "Bench")
         p.connected = True
         p.emitted = []
-        p._emit = lambda event, *a, **k: p.emitted.append(event)
+        # bus-level recorder: every published event name lands here (the
+        # notify formatting path is exercised elsewhere)
+        import notify
+        for ev in notify.MESSAGES:
+            state.subscribe(ev, lambda payload, ev=ev, p=p: p.emitted.append(ev))
 
         async def noop(on):
             p.light.append(on)

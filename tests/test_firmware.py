@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 import firmware
-from printers.base import PrinterConnection
 from printers.cc1 import CC1Connection
 from printers.cc2 import CC2Connection
 from printers.moonraker import MoonrakerConnection
@@ -138,9 +137,14 @@ async def test_prusa_reads_firmware_and_survives_a_failure(tested):
 
 @pytest.fixture
 def quiet(monkeypatch):
+    """Record the Notifications the notify channel builds (the bus path)."""
+    import notify
+    import push as push_mod
+    push_mod.save_notif_settings({"firmware": {"enabled": True}})
+    import features as features_mod
+    features_mod.set_enabled("notifications", True)
     emitted = []
-    monkeypatch.setattr(PrinterConnection, "_emit",
-                        lambda self, event, title, body="", priority="default", extra=None: emitted.append((event, title, body, extra)))
+    monkeypatch.setattr(notify, "notify", lambda n: emitted.append(n) or True)
     return emitted
 
 
@@ -164,9 +168,9 @@ def test_a_change_is_logged_and_announced_and_survives_a_restart(tested, quiet, 
     q.attrs = {"FirmwareVersion": "V2.0.0"}
     q._note_firmware()
     assert "Firmware changed: V0.4.0-o -> V2.0.0" in capsys.readouterr().out
-    [(event, title, body, extra)] = quiet
-    assert event == "firmware_changed" and "V0.4.0-o → V2.0.0" in body and "not been tested" in body
-    assert extra == {"from": "V0.4.0-o", "to": "V2.0.0", "tested": False}
+    [(n)] = quiet
+    assert n.event == "firmware_changed" and "V0.4.0-o → V2.0.0" in n.body and "not been tested" in n.body
+    assert n.extra == {"from": "V0.4.0-o", "to": "V2.0.0", "tested": False}
     r = CC1Connection("a", "10.0.0.1", "Bench")
     r.attrs = {"FirmwareVersion": "V2.0.0"}
     r._note_firmware()

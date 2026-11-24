@@ -179,9 +179,7 @@ async def check_printer(p, s: dict) -> None:
                      "bad": watch.bad, "frames": s["frames"], "at": time.time()}
     await p._broadcast_state()
     if alert:
-        p._emit("spaghetti", f"{p.name} — Possible print failure",
-                "The detector thinks this print may be failing (spaghetti). Check the printer.",
-                priority="urgent")
+        state.publish("spaghetti", printer_id=p.id, printer=p.to_dict(), data={"priority": "urgent"})
 
 
 async def watch_loop() -> None:
