@@ -258,6 +258,7 @@ function renderPrinter(printer) {
                  onchange="setSpeed('${escAttr(printer.id)}',+this.value)">
         </div>`;
       })() : ""}
+      ${printerButtonsHtml(printer)}
     </div>
   `;
 
@@ -323,6 +324,15 @@ function renderPrinter(printer) {
   } else if (lightOverlay) {
     lightOverlay.remove();
   }
+}
+
+// ─── Webhook buttons on the printer card ─────────────────────────────────────
+function printerButtonsHtml(printer) {
+  const list = buttons.filter(b => buttonAppliesTo(b, printer.id));
+  if (!list.length) return "";
+  return `<div class="card-buttons">${list.map(b =>
+    `<button class="btn btn-sm btn-secondary" onclick="runButton('${escAttr(b.id)}','${escAttr(printer.id)}')"
+             title="${b.confirm ? "Asks for confirmation" : ""}">${escHtml(b.label)}</button>`).join("")}</div>`;
 }
 
 function syncEmptyState() {
