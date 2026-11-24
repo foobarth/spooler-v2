@@ -613,7 +613,7 @@ class PrinterConnection:
             if entry_id:
                 await self._save_print_picture(entry_id)
         finally:
-            await self._auto_light(False)
+            await self._auto_light(False)   # inline on purpose: sequenced after the end picture (ADR-0002)
 
     async def upload_file(self, local_path, remote_name: str, start_after: bool = False) -> bool:
         """Send a file already on disk to the printer's storage, optionally
@@ -1025,7 +1025,7 @@ class PrinterConnection:
                 saved.observe(pi.get("TotalExtrusion", 0) or 0)
             await self._flush_orphaned_accounting(saved)
             await self._queue_print_ended(cur_status)
-            asyncio.create_task(self._auto_light(False))      # the print is over; the light it turned on may still be on
+            asyncio.create_task(self._auto_light(False))      # light-off is machine sequencing (end choreography), not a channel — ADR-0002
         elif first_status and now_active:
             # First thing seen after (re)start is a print in progress: carry on
             # where we left off instead of treating it as a new print.
@@ -1066,7 +1066,6 @@ class PrinterConnection:
             # event the bus channels read.
             state.publish("print_started", printer_id=self.id, printer=self.to_dict(),
                           data={"filename": pi.get("Filename") or ""})
-            asyncio.create_task(self._auto_light(True))
             self._acct = PrintAccounting(current_spool=self._tray_spool(), filename=pi.get("Filename", ""),
                                          started_at=self._print_start_time)
             self._save_accounting(force=True)

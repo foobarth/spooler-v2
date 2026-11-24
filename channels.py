@@ -18,6 +18,7 @@ def wire() -> None:
     state.reset_subscriptions()
     _wire_dataset()
     _wire_job_queue()
+    _wire_auto_light()
 
 
 def _wire_dataset() -> None:
@@ -41,3 +42,15 @@ def _wire_job_queue() -> None:
 
     state.subscribe("print_started", started)
     state.subscribe("print_ended", ended)
+
+
+def _wire_auto_light() -> None:
+    # Light-ON only. The OFF side stays inline in the machine: it is
+    # sequenced with the end-of-print picture (the light must still be on
+    # for the shot) and with orphaned-print recovery (ADR-0002, Principle).
+    async def light_on(payload: dict) -> None:
+        pr = state.printers.get(payload["printer_id"])
+        if pr:
+            await pr._auto_light(True)
+
+    state.subscribe("print_started", light_on)
