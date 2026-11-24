@@ -131,3 +131,39 @@ async def test_print_ended_closes_the_queued_job_with_its_end_state(tmp_path, en
     job = job_queue.list_jobs()[0]
     assert job["status"] == status and job["finished_at"]
     assert job["error"] == ("Nozzle clog" if status == "error" else None)
+
+
+# ── auto-light ───────────────────────────────────────────────────────────────
+# Only the light-ON side migrates: light-off is sequenced with the
+# end-of-print picture inside the machine (it must stay on for the shot),
+# so it stays inline per ADR-0002's principle.
+
+async def test_print_started_turns_the_auto_light_on(monkeypatch):
+    from printers.base import PrinterConnection
+    p = PrinterConnection("p1", "192.0.2.5", "Light")
+    p.auto_light, p.supports_light, p.connected = True, True, True
+    light_calls = []
+
+    async def set_light(on):
+        light_calls.append(on)
+    p.set_light = set_light                     # observe without a real printer
+    monkeypatch.setattr(state, "printers", {"p1": p})
+
+    state.publish("print_started", printer_id="p1")
+    await _wait_for(lambda: light_calls == [True])
+
+
+async def test_print_started_leaves_the_light_alone_when_auto_light_is_off(monkeypatch):
+    from printers.base import PrinterConnection
+    p = PrinterConnection("p1", "192.0.2.5", "Light")
+    p.auto_light, p.supports_light, p.connected = False, True, True
+    light_calls = []
+
+    async def set_light(on):
+        light_calls.append(on)
+    p.set_light = set_light
+    monkeypatch.setattr(state, "printers", {"p1": p})
+
+    state.publish("print_started", printer_id="p1")
+    await asyncio.sleep(0.05)
+    assert light_calls == []
