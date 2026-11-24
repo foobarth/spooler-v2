@@ -9,6 +9,7 @@ import pytest
 
 import backup
 import buttons
+import channels
 import config
 import features
 import gcode
@@ -59,7 +60,8 @@ def isolated_data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(job_queue, "QUEUE_DIR", tmp_path / "queue")
     monkeypatch.setattr(job_queue, "QUEUE_FILE", tmp_path / "queue" / "queue.json")
     monkeypatch.setattr(buttons, "BUTTONS_FILE", tmp_path / "buttons.json")
-    # Event bus: channels register in their own fixtures (via channels.wire());
-    # without this reset a subscription from one test file would fire in another's.
+    # Event bus: reset subscriptions, then wire the real channels the way
+    # server startup does, so every test exercises the wired system.
     monkeypatch.setattr(state, "_subscriptions", {})
+    channels.wire()
     yield tmp_path

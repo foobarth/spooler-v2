@@ -81,6 +81,20 @@ def publish(event: str, printer_id: str = "", printer: dict | None = None,
             asyncio.run_coroutine_threadsafe(_dispatch(cb, payload), _main_loop)
 
 
+async def publish_now(event: str, printer_id: str = "", printer: dict | None = None,
+                      data: dict | None = None) -> None:
+    """Awaited dispatch: subscribers run sequentially (subscription order),
+    each error-isolated, and publish_now returns only when all have run.
+
+    For machine-coupled consumers — where the state machine's next
+    observable step depends on the subscriber having completed. Everything
+    else uses publish() (ADR-0002: two dispatch modes)."""
+    payload = {"printer_id": printer_id, "event": event, "printer": printer,
+               "data": data or {}}
+    for cb in list(_subscriptions.get(event, [])):
+        await _dispatch(cb, payload)
+
+
 async def _dispatch(cb, payload: dict) -> None:
     try:
         result = cb(payload)
