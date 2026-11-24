@@ -93,6 +93,18 @@ FIELDS: dict = {
     "telegram.thread_id": Field(key="telegram.thread_id", label="Telegram topic number (optional, for groups with topics)", type="text", default=""),
     "discord.webhook": Field(key="discord.webhook", label="Discord webhook address", type="secret", default=""),
     "webhook.url": Field(key="webhook.url", label="Webhook address", type="secret", default=""),
+    "mqtt.url": Field(
+        key="mqtt.url", label="MQTT broker address (Home Assistant bridge)", type="url",
+        env="MQTT_URL", default="", schemes=("mqtt",),
+    ),
+    "mqtt.username": Field(
+        key="mqtt.username", label="MQTT username (optional)", type="text", default="",
+        env="MQTT_USERNAME",
+    ),
+    "mqtt.password": Field(
+        key="mqtt.password", label="MQTT password (optional)", type="secret", default="",
+        env="MQTT_PASSWORD",
+    ),
     "spaghetti.url": Field(
         key="spaghetti.url", label="Detector address (Obico ML API)", type="url", default="",
         schemes=("http", "https"),
