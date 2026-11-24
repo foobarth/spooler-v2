@@ -57,6 +57,8 @@ except ImportError:
 import auth
 import state
 from auth import AUTH_ENABLED, BCRYPT_AVAILABLE, session_cleanup_loop
+
+import channels
 import diagnostics
 import spaghetti
 import dataset
@@ -177,6 +179,12 @@ async def main() -> None:
         print(f"[Config] Loaded {len(state.printers)} saved printer(s)")
 
     state.tray_map = load_tray_map()
+
+    # Event bus (ADR-0002): record the main loop (publish from threads) and
+    # subscribe the channels. Before any printer task starts, so the very
+    # first events have their subscribers.
+    state.remember_loop()
+    channels.wire()
 
     asyncio.create_task(session_cleanup_loop())
     asyncio.create_task(daily_backup_loop())
