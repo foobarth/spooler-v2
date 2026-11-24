@@ -5,6 +5,7 @@ Keeping this separate from the rest of the codebase breaks all potential
 circular imports: nothing here imports from within this project.
 """
 
+import asyncio
 import json
 import os
 import time
@@ -24,6 +25,70 @@ browser_clients: set = set()
 
 # { printer_id: { str(tray_id): spoolman_spool_id } }
 tray_map: dict = {}
+
+
+# ── event bus ────────────────────────────────────────────────────────────────
+# Printers publish; channels subscribe (docs/adr-event-bus.md). Fire-and-
+# forget: every subscriber runs in its own task, a subscriber's exception is
+# logged and never reaches the publisher or other subscribers, there is no
+# ordering guarantee between subscribers, and nothing is retained. Channels
+# register explicitly (channels.wire() at startup), never at import time.
+
+_subscriptions: dict = {}   # event name -> [callback]
+_dispatched: set = set()    # strong refs to in-flight dispatch tasks
+_main_loop: asyncio.AbstractEventLoop | None = None
+
+
+def subscribe(event: str, callback) -> None:
+    """Register a channel callback for an event. Call from wire(), never
+    at import time, so tests reset cleanly."""
+    _subscriptions.setdefault(event, []).append(callback)
+
+
+def reset_subscriptions() -> None:
+    """Test isolation and re-wiring: forget every subscription."""
+    _subscriptions.clear()
+
+
+def remember_loop() -> None:
+    """Record the main loop so publish() works from non-loop threads too.
+    Called once from server startup, inside the running loop."""
+    global _main_loop
+    _main_loop = asyncio.get_running_loop()
+
+
+def publish(event: str, printer_id: str = "", printer: dict | None = None,
+            data: dict | None = None) -> None:
+    """Fire-and-forget dispatch of one event to its subscribers. Sync-safe:
+    called from sync code inside the event loop it returns immediately, and
+    from other threads it hands the dispatch to the remembered loop."""
+    payload = {"printer_id": printer_id, "event": event, "printer": printer,
+               "data": data or {}}
+    subs = list(_subscriptions.get(event, []))
+    if not subs:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+        for cb in subs:
+            task = loop.create_task(_dispatch(cb, payload))
+            _dispatched.add(task)
+            task.add_done_callback(_dispatched.discard)
+    except RuntimeError:
+        if _main_loop is None or _main_loop.is_closed():
+            print(f"[Events] no event loop; dropped {event} for {printer_id!r}")
+            return
+        for cb in subs:
+            asyncio.run_coroutine_threadsafe(_dispatch(cb, payload), _main_loop)
+
+
+async def _dispatch(cb, payload: dict) -> None:
+    try:
+        result = cb(payload)
+        if asyncio.iscoroutine(result):
+            await result
+    except Exception as e:
+        print(f"[Events] subscriber {getattr(cb, '__name__', repr(cb))} failed "
+              f"on {payload['event']}: {type(e).__name__}: {e}")
 
 
 def _client_can_see(client, printer_id: str) -> bool:
