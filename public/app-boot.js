@@ -118,6 +118,10 @@ if (new URLSearchParams(location.search).get("demo") === "states") {
         const b = document.getElementById("btn-settings-goto-users");
         if (b) b.style.display = "";
       }
+      if (window.SPOOLER_PERMS.includes("settings.manage")) {
+        const b = document.getElementById("btn-settings-goto-buttons");
+        if (b) b.style.display = "";
+      }
       if (user) {
         const nameEl = document.getElementById("signed-in-as-name");
         const wrap = document.getElementById("signed-in-as");

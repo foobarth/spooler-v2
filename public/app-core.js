@@ -50,6 +50,7 @@ let printers = {}; // id → printer data
 let history  = []; // print history log
 let spools   = []; // spool inventory from Spoolman
 let trayMap  = {}; // printer_id → { tray_id_str → spoolman_spool_id }
+let buttons  = []; // webhook buttons from buttons.json (see buttons.py)
 let _prevActiveTray = {}; // printer_id → last seen active_tray_id
 let features = {}; // key → {name, description, enabled, locked, missing, risky, requires}
 
@@ -149,6 +150,7 @@ function connect() {
     // whatever happened while disconnected (printer events we never saw)
     // must not linger as stale data once the connection is back.
     send({ action: "list_printers" });
+    send({ action: "list_buttons" });
     loadHistory();
     loadLedger();
     if (featureEnabled("service_log")) loadService();
@@ -194,6 +196,7 @@ document.addEventListener("visibilitychange", () => {
     connect();
   } else if (ws.readyState === WebSocket.OPEN) {
     send({ action: "list_printers" });
+    send({ action: "list_buttons" });
     loadHistory();
     fetchSpools();
   }
@@ -277,10 +280,49 @@ function handleMessage(msg) {
         }, 12000);
       }
       break;
+    case "buttons":
+      buttons = msg.buttons || [];
+      renderSidebarButtons();
+      Object.values(printers).forEach(p => renderPrinter(p));
+      break;
+    case "buttons_saved":
+      buttons = buttons.filter(b => b.id !== msg.button.id).concat([msg.button]);
+      renderSidebarButtons();
+      Object.values(printers).forEach(p => renderPrinter(p));
+      break;
+    case "button_result":
+      if (msg.ok) toast(`${msg.label}: sent (HTTP ${msg.status})`);
+      else toast(`${msg.label}: ${msg.error || "failed"}`, true);
+      break;
     case "features_changed":
       _applyFeatures(msg.features || []);
       break;
   }
+}
+
+// ─── Webhook buttons ──────────────────────────────────────────────────────────
+function buttonAppliesTo(b, printerId) {
+  return b.printers === "*" || (Array.isArray(b.printers) && b.printers.includes(printerId));
+}
+
+function runButton(id, printerId) {
+  const b = buttons.find(x => x.id === id);
+  if (!b) return;
+  if (b.confirm && !confirm(`Run "${b.label}"?`)) return;
+  send({ action: "run_button", button_id: id, printer_id: printerId || null });
+}
+
+function renderSidebarButtons() {
+  const box = document.getElementById("sidebar-buttons");
+  if (!box) return;
+  const unscoped = buttons.filter(b => b.printers === "*");
+  box.innerHTML = unscoped.map(b =>
+    `<button class="sidenav-item" onclick="runButton('${escAttr(b.id)}')">
+       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+         <polygon points="13,2 3,14 12,14 11,22 21,10 12,10"/>
+       </svg>
+       <span>${escHtml(b.label)}</span>
+     </button>`).join("");
 }
 
 function _checkActiveTrayChange(printer) {

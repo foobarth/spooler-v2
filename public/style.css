@@ -523,6 +523,15 @@ main {
   flex-wrap: wrap;
 }
 .controls-spacer { flex: 1; }
+/* Webhook buttons defined in Settings (buttons.json) — a row of small
+   buttons under the print controls on each card they are scoped to. */
+.card-buttons {
+  display: flex;
+  gap: 8px;
+  padding: 0 18px 12px;
+  flex-wrap: wrap;
+}
+.card-buttons:empty { display: none; }
 .card-speed {
   width: 100%;
   display: flex;

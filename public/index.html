@@ -93,6 +93,7 @@
       </svg>
       <span>Settings</span>
     </button>
+    <div id="sidebar-buttons"></div>
     <div class="sidenav-spacer"></div>
     <button id="signed-in-as" class="sidenav-item sidenav-user" title="Me: your profile, devices and prints" style="display:none">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -523,6 +524,13 @@
               <span>Printers</span>
               <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
             </button>
+            <button class="settings-menu-item" id="btn-settings-goto-buttons" style="display:none">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="13,2 3,14 12,14 11,22 21,10 12,10"/>
+              </svg>
+              <span>Webhook buttons</span>
+              <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+            </button>
             <button class="settings-menu-item" id="btn-settings-goto-notifications">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>
@@ -581,6 +589,37 @@
         </div>
       </div>
       <!-- Printers sub-page -->
+      <div id="settings-buttons" style="display:none">
+        <div class="settings-subpage-header">
+          <button id="btn-settings-back-buttons" class="settings-back-btn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
+          </button>
+          <h3>Webhook buttons</h3>
+        </div>
+        <p class="me-note">Buttons send an HTTP request when pressed — for example a Home Assistant webhook that toggles the smart plug powering a printer. Every press is logged.</p>
+        <div id="settings-button-list" class="settings-printer-list"></div>
+        <div class="modal-actions">
+          <button id="btn-settings-add-button" class="btn btn-primary">Add button</button>
+        </div>
+        <div id="button-form" style="display:none">
+          <label class="input-label">Label<input id="button-label" class="input" maxlength="40" placeholder="Power printer"></label>
+          <label class="input-label">Webhook URL<input id="button-url" class="input" placeholder="https://home.example/api/webhook/…"></label>
+          <label class="input-label">Method
+            <select id="button-method" class="input"><option>POST</option><option>GET</option></select>
+          </label>
+          <label class="input-label">JSON body (POST only, optional)<textarea id="button-body" class="input" rows="3" placeholder='{"plug":"on"}'></textarea></label>
+          <label class="input-label">Run only while the printer is idle
+            <select id="button-when" class="input"><option value="any">Any time</option><option value="idle">Only while idle</option></select>
+          </label>
+          <label class="input-label"><input type="checkbox" id="button-confirm"> Ask for confirmation before sending</label>
+          <div class="input-label">Show on<div id="button-printers"></div></div>
+          <div class="modal-actions">
+            <button id="btn-button-save" class="btn btn-primary">Save</button>
+            <button id="btn-button-delete" class="btn btn-danger" style="display:none">Delete</button>
+            <button id="btn-button-cancel" class="btn btn-secondary">Cancel</button>
+          </div>
+        </div>
+      </div>
       <div id="settings-printers" style="display:none">
         <div class="settings-subpage-header">
           <button id="btn-settings-back-printers" class="settings-back-btn">
@@ -960,9 +999,9 @@
 
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <script src="/config.js"></script>
-  <script src="app-core.js?v=94"></script>
-  <script src="app-render.js?v=92"></script>
-  <script src="app-settings.js?v=94"></script>
+  <script src="app-core.js?v=95"></script>
+  <script src="app-render.js?v=93"></script>
+  <script src="app-settings.js?v=95"></script>
   <script src="app-files.js?v=91"></script>
   <script src="app-integrations.js?v=96"></script>
   <script src="app-stats.js?v=90"></script>
@@ -973,7 +1012,7 @@
   <script src="app-users.js?v=1"></script>
   <script src="app-me.js?v=2"></script>
   <script src="app-nav.js?v=2"></script>
-  <script src="app-boot.js?v=89"></script>
+  <script src="app-boot.js?v=90"></script>
   <script>
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").catch(() => {});

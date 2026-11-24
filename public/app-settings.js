@@ -21,8 +21,11 @@ const _settingsFeaturesPage   = document.getElementById("settings-features");
 const _settingsIntegrationsPage = document.getElementById("settings-integrations");
 const _settingsApiPage = document.getElementById("settings-api");
 const _settingsUsersPage = document.getElementById("settings-users");
+const _settingsButtonsPage = document.getElementById("settings-buttons");
+const _buttonForm = document.getElementById("button-form");
+let _editingButtonId = null;
 
-const _allSettingsPages = () => [_settingsPwPage, _settingsNotifPage, _settingsPrintersPage, _settingsPrinterEditPage, _settingsBackupPage, _settingsFeaturesPage, _settingsIntegrationsPage, _settingsApiPage, _settingsUsersPage];
+const _allSettingsPages = () => [_settingsPwPage, _settingsNotifPage, _settingsPrintersPage, _settingsPrinterEditPage, _settingsBackupPage, _settingsFeaturesPage, _settingsIntegrationsPage, _settingsApiPage, _settingsUsersPage, _settingsButtonsPage];
 
 function _openSettings() {
   _allSettingsPages().forEach(p => p && (p.style.display = "none"));
@@ -912,6 +915,87 @@ document.getElementById("btn-remove-printer").addEventListener("click", () => {
   if (confirm("Remove this printer?")) {
     send({ action: "remove_printer", printer_id: _editingPrinterId });
     closePrinters();
+  }
+});
+
+// ─── Webhook buttons ─────────────────────────────────────────────────────────
+const _canManageButtons = () => (window.SPOOLER_PERMS || []).includes("settings.manage");
+
+function _renderSettingsButtons() {
+  const box = document.getElementById("settings-button-list");
+  if (!box) return;
+  box.innerHTML = buttons.length ? buttons.map(b => `
+    <div class="settings-printer-item">
+      <div class="settings-printer-info">
+        <div class="settings-printer-name">${escHtml(b.label)}</div>
+        <div class="settings-printer-meta">${escHtml(b.method)} · ${b.when === "idle" ? "idle only" : "any time"}
+          · ${b.printers === "*" ? "menu + all cards" : `${b.printers.length} printer(s)`}</div>
+      </div>
+      <button class="btn btn-sm btn-secondary" onclick="_editButton('${escAttr(b.id)}')">Edit</button>
+    </div>`).join("")
+    : `<p class="me-note">No buttons yet.</p>`;
+}
+
+function _openButtons() {
+  _showSettingsPage(_settingsButtonsPage);
+  _renderSettingsButtons();
+}
+
+function _closeButtonForm() {
+  _buttonForm.style.display = "none";
+  _editingButtonId = null;
+}
+
+function _editButton(id) {
+  const b = buttons.find(x => x.id === id) || {};
+  _editingButtonId = b.id || null;
+  document.getElementById("button-label").value = b.label || "";
+  document.getElementById("button-url").value = b.url || "";
+  document.getElementById("button-method").value = b.method || "POST";
+  document.getElementById("button-body").value = b.body || "";
+  document.getElementById("button-when").value = b.when || "any";
+  document.getElementById("button-confirm").checked = !!b.confirm;
+  // printer scoping: one checkbox per known printer, "menu" tick = unscoped
+  const box = document.getElementById("button-printers");
+  const scoped = Array.isArray(b.printers) ? b.printers : [];
+  box.innerHTML = [`<label class="option-row"><input type="checkbox" id="bp-menu" ${b.printers === "*" ? "checked" : ""}> Menu (all printers)</label>`]
+    .concat(Object.values(printers).map(p =>
+      `<label class="option-row"><input type="checkbox" class="bp-printer" value="${escAttr(p.id)}"
+        ${b.printers === "*" || scoped.includes(p.id) ? "checked" : ""}> ${escHtml(p.name)}</label>`))
+    .join("");
+  document.getElementById("btn-button-delete").style.display = _editingButtonId ? "" : "none";
+  _buttonForm.style.display = "";
+}
+
+function _saveButtonForm() {
+  const menuChecked = document.getElementById("bp-menu")?.checked;
+  const printerIds = [...document.querySelectorAll(".bp-printer:checked")].map(x => x.value);
+  const printers = (menuChecked || printerIds.length === 0) ? "*" : printerIds;
+  const bodyText = document.getElementById("button-body").value.trim();
+  send({
+    action: "save_button", id: _editingButtonId || undefined,
+    label: document.getElementById("button-label").value,
+    url: document.getElementById("button-url").value.trim(),
+    method: document.getElementById("button-method").value,
+    body: bodyText || null,
+    when: document.getElementById("button-when").value,
+    confirm: document.getElementById("button-confirm").checked,
+    printers,
+  });
+  _closeButtonForm();
+  _renderSettingsButtons();
+}
+
+document.getElementById("btn-settings-goto-buttons")?.addEventListener("click", _openButtons);
+document.getElementById("btn-settings-back-buttons")?.addEventListener("click", () => _backToSettingsMenu());
+document.getElementById("btn-settings-add-button")?.addEventListener("click", () => _editButton(null));
+document.getElementById("btn-button-save")?.addEventListener("click", _saveButtonForm);
+document.getElementById("btn-button-cancel")?.addEventListener("click", _closeButtonForm);
+document.getElementById("btn-button-delete")?.addEventListener("click", () => {
+  if (_editingButtonId && confirm("Delete this button?")) {
+    send({ action: "delete_button", button_id: _editingButtonId });
+    _closeButtonForm();
+    _renderSettingsButtons();
   }
 });
 
