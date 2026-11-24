@@ -106,6 +106,42 @@ def test_clear_removes_stored_secret():
     assert entry["set"] is False
 
 
+# ── MQTT bridge ──────────────────────────────────────────────────────────────
+
+def test_mqtt_url_default_is_empty():
+    assert get("mqtt.url") == ""
+
+
+def test_mqtt_url_env_fallback(monkeypatch):
+    monkeypatch.setenv("MQTT_URL", "mqtt://192.168.1.60:1883")
+    assert get("mqtt.url") == "mqtt://192.168.1.60:1883"
+    assert config.source_of("mqtt.url") == "env"
+
+
+def test_mqtt_url_accepts_mqtt_scheme_and_strips_trailing_slash():
+    config_set("mqtt.url", "mqtt://192.168.1.60:1883/")
+    assert get("mqtt.url") == "mqtt://192.168.1.60:1883"
+
+
+def test_mqtt_url_rejects_non_mqtt_scheme():
+    with pytest.raises(ConfigError, match="mqtt"):
+        config_set("mqtt.url", "http://192.168.1.60:1883")
+
+
+def test_mqtt_credentials_env_fallback(monkeypatch):
+    monkeypatch.setenv("MQTT_USERNAME", "homeassistant")
+    monkeypatch.setenv("MQTT_PASSWORD", "secret")
+    assert get("mqtt.username") == "homeassistant"
+    assert get("mqtt.password") == "secret"
+
+
+def test_mqtt_password_is_masked_as_secret():
+    config_set("mqtt.password", "hunter2")
+    entry = next(e for e in config.describe_all() if e["key"] == "mqtt.password")
+    assert "value" not in entry
+    assert entry["set"] is True
+
+
 # ── SPOOLER_LOCK_CONFIG ───────────────────────────────────────────────────────
 
 def test_lock_config_forces_env_over_stored_ui_value(monkeypatch):

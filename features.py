@@ -136,6 +136,13 @@ FEATURES: dict = {
         description="POST every notification as JSON to an address you choose.",
         requires=("notifications",), requires_config=("webhook.url",),
     ),
+    "mqtt_bridge": Feature(
+        key="mqtt_bridge", name="Home Assistant MQTT bridge", default=True,
+        description="Publish printer status, events and camera to your own MQTT broker with Home "
+                    "Assistant discovery — one entity set per printer, Spooler stays the only "
+                    "client on each printer's own connection. Broker address under Integrations.",
+        requires_config=("mqtt.url",),
+    ),
 }
 
 # A force-disabled feature can never be turned on, by anyone, until the

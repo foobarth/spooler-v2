@@ -5,6 +5,7 @@ import json
 import pytest
 
 import features
+from config import set as config_set
 from features import FeatureError, is_enabled, on_change, requires_feature, set_enabled
 
 
@@ -157,3 +158,17 @@ def test_http_handler_gated_methods_reference_real_features():
     for name in gated:
         key = getattr(http_handler.SPHandler, name)._feature_gate
         assert key in features.FEATURES, f"{name} is gated on unknown feature {key!r}"
+
+
+# ── mqtt_bridge flag ─────────────────────────────────────────────────────────
+
+def test_mqtt_bridge_enabled_by_default_but_missing_without_broker_url():
+    byk = {f["key"]: f for f in features.describe_all()}
+    assert byk["mqtt_bridge"]["enabled"] is True
+    assert byk["mqtt_bridge"]["missing"] is True  # no mqtt.url configured yet
+
+
+def test_mqtt_bridge_missing_clears_once_mqtt_url_is_set():
+    config_set("mqtt.url", "mqtt://192.168.1.60:1883")
+    byk = {f["key"]: f for f in features.describe_all()}
+    assert byk["mqtt_bridge"]["missing"] is False
