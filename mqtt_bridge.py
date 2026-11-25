@@ -258,7 +258,22 @@ class _Sent:
 
 _published: dict = {}       # printer_id -> _Sent (what the topic holds right now)
 _announced_canvas: dict = {}  # printer_id -> set of tray ids with discovery out
+_discovered: dict = {}      # printer_id -> discovery topics announced (what stop_and_clear must empty)
 _client = None              # the live aiomqtt client, set while connected
+
+
+async def _publish_discovery(pid: str, msgs) -> None:
+    """Publish discovery, remembering the topics so stop_and_clear can
+    empty every retained payload later ("off means off")."""
+    topics = []
+    for topic, payload in msgs:
+        topics.append(topic)
+        await _client.publish(topic, payload, retain=True)
+    if topics:
+        known = _discovered.setdefault(pid, [])
+        for t in topics:
+            if t not in known:
+                known.append(t)
 
 
 def _canvas_tray_ids(canvas: dict) -> set:
@@ -283,8 +298,7 @@ async def on_status(payload: dict) -> None:
     canvas = d.get("canvas")
     if isinstance(canvas, dict) and canvas.get("trays") \
             and _canvas_tray_ids(canvas) - _announced_canvas.get(pid, set()):
-        for topic, cfg in _canvas_entities(pid, d, canvas):
-            await _client.publish(topic, cfg, retain=True)
+        await _publish_discovery(pid, _canvas_entities(pid, d, canvas))
         _note_canvas_announced(pid, canvas)
         await _publish_state(pid, fresh)
         return
@@ -310,8 +324,7 @@ async def _announce(client) -> None:
     await client.publish(BRIDGE_AVAILABILITY, "online", retain=True)
     for pid, pr in list(state.printers.items()):
         d = _printer_dict(pr)
-        for topic, payload in _discovery_messages(pid, d):
-            await client.publish(topic, payload, retain=True)
+        await _publish_discovery(pid, _discovery_messages(pid, d))
         canvas = d.get("canvas")
         if isinstance(canvas, dict):
             _note_canvas_announced(pid, canvas)
@@ -343,3 +356,34 @@ async def stop_and_clear():
         except asyncio.CancelledError:
             pass
         _task = None
+    await _clear_discovery()
+
+
+async def _clear_discovery():
+    """Empty every retained payload we ever published — availability, state
+    and discovery — so switching the feature off makes the HA entities
+    vanish instead of going stale. Best effort: if the broker is unreachable
+    the records survive, and the next stop_and_clear retries the clear."""
+    if aiomqtt is None or not (_discovered or _published):
+        return
+    hostname, port, username, password = _broker_params()
+    try:
+        async with aiomqtt.Client(
+            hostname=hostname, port=port, identifier=_client_id,
+            username=username, password=password,
+        ) as client:
+            await client.publish(BRIDGE_AVAILABILITY, b"", retain=True)
+            for pid in set(_discovered) | set(_published):
+                for topic in _discovered.get(pid, []):
+                    await client.publish(topic, b"", retain=True)
+                await client.publish(_state_topic(pid), b"", retain=True)
+            # QoS-0 publishes are handed to aiomqtt's loop task; leaving the
+            # context immediately would drop whatever it hasn't written yet.
+            await asyncio.sleep(0.25)
+    except aiomqtt.MqttError as e:
+        print(f"[Bridge] Broker unreachable, retained discovery not cleared yet "
+              f"({type(e).__name__}: {e}) — the next stop clears it")
+        return
+    _discovered.clear()
+    _published.clear()
+    _announced_canvas.clear()

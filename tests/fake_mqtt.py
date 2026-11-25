@@ -125,12 +125,13 @@ class FakeBroker:
     @staticmethod
     def _parse_connect(flags: int, body: bytes) -> RecordedConnect:
         _, offset = _parse_string(body, 0)          # protocol name ("MQTT")
+        connect_flags = body[offset + 1]            # level byte, then the connect flags
         offset += 4                                 # level + connect flags + keepalive
         will_topic = will_payload = None
-        if flags & 0x04:                            # will flag
+        client_id, offset = _parse_string(body, offset)   # payload order: client id,
+        if connect_flags & 0x04:                    # then will topic + will payload
             will_topic, offset = _parse_string(body, offset)
             will_payload, offset = _parse_binary(body, offset)
-        client_id, _ = _parse_string(body, offset)
         return RecordedConnect(client_id, will_topic, will_payload)
 
     # ── assertion helpers ────────────────────────────────────────────────────

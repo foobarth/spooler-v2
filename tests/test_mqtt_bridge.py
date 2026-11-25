@@ -25,6 +25,7 @@ async def broker(monkeypatch):
     config_set("mqtt.url", f"mqtt://127.0.0.1:{b.port}")
     monkeypatch.setattr(mqtt_bridge, "_published", {})
     monkeypatch.setattr(mqtt_bridge, "_announced_canvas", {})
+    monkeypatch.setattr(mqtt_bridge, "_discovered", {})
     monkeypatch.setattr(mqtt_bridge, "_client", None)
     yield b
     await mqtt_bridge.stop_and_clear()
@@ -275,3 +276,61 @@ async def test_canvas_arriving_later_still_gets_discovered(broker, monkeypatch):
     await asyncio.wait_for(_state_has_canvas(), 2.0)
     last = json.loads(broker.payloads("spooler/p1/state")[-1])
     assert last["canvas_active_tray"] == 2
+
+
+# ── availability LWT: the bridge dying must not leave a stale "online" ───────
+
+async def test_lwt_declared_and_offline_fires_when_the_connection_dies(broker, monkeypatch):
+    _register_printer(monkeypatch)
+    await mqtt_bridge.ensure_started()
+    conn = await broker.wait_for_connect()
+    assert conn.will_topic == "spooler/bridge/availability"
+    assert conn.will_payload == b"offline"
+
+    online = await broker.wait_for_publish("spooler/bridge/availability")
+    assert online.payload == b"online" and online.retain
+
+    await broker.drop_client()          # bridge dies without a DISCONNECT
+    async def _offline_fires():
+        while b"offline" not in broker.payloads("spooler/bridge/availability"):
+            await asyncio.sleep(0.01)
+    await asyncio.wait_for(_offline_fires(), 2.0)
+    offline = [p for p in broker.publishes
+               if p.topic == "spooler/bridge/availability" and p.payload == b"offline"][-1]
+    assert offline.retain
+
+
+# ── stop_and_clear: "off means off" — entities vanish, not go stale ─────────
+
+async def test_stop_and_clear_empties_every_retained_topic(broker, monkeypatch):
+    _register_printer(monkeypatch, canvas_info=CANVAS_INFO)
+    await mqtt_bridge.ensure_started()
+    await broker.wait_for_publish("spooler/p1/state")
+    announced = sorted({p.topic for p in broker.publishes if p.retain})
+
+    await mqtt_bridge.stop_and_clear()
+
+    cleared = {p.topic: p for p in broker.publishes if p.payload == b""}
+    assert "spooler/bridge/availability" in cleared
+    for topic in announced:
+        last = cleared.get(topic)
+        assert last is not None, f"{topic} was never cleared"
+        assert last.retain, f"{topic} was cleared non-retained"
+    assert mqtt_bridge._discovered == {} and mqtt_bridge._published == {}
+
+
+async def test_stop_and_clear_without_a_prior_run_is_a_no_op(broker):
+    n = len(broker.publishes)
+    await mqtt_bridge.stop_and_clear()
+    assert len(broker.publishes) == n
+
+
+async def test_stop_and_clear_keeps_the_record_when_the_broker_is_gone(broker, monkeypatch):
+    _register_printer(monkeypatch)
+    await mqtt_bridge.ensure_started()
+    await broker.wait_for_publish("spooler/p1/state")
+    assert mqtt_bridge._discovered
+
+    await broker.stop()                 # broker unreachable at clear time
+    await mqtt_bridge.stop_and_clear()
+    assert mqtt_bridge._discovered, "the record must survive so the next clear can retry"
