@@ -25,6 +25,7 @@ async def broker(monkeypatch):
     config_set("mqtt.url", f"mqtt://127.0.0.1:{b.port}")
     monkeypatch.setattr(mqtt_bridge, "_published", {})
     monkeypatch.setattr(mqtt_bridge, "_discovered", {})
+    monkeypatch.setattr(mqtt_bridge, "_published_yaml", {})
     monkeypatch.setattr(mqtt_bridge, "_client", None)
     yield b
     await mqtt_bridge.stop_and_clear()
@@ -389,3 +390,65 @@ async def test_camera_feeder_rests_while_not_printing(broker, monkeypatch):
     await mqtt_bridge.ensure_started()
     await asyncio.sleep(0.15)
     assert not grabs, "an idle printer gets no frames"
+
+
+# ── realtime camera (flavor b): paste-ready HA camera.mjpeg YAML ─────────────
+
+async def test_camera_yaml_published_when_base_and_token_are_configured(broker, monkeypatch):
+    _register_printer(monkeypatch)
+    state.printers["p1"].camera_url = "http://192.0.2.5:8080/mjpeg"
+    config_set("camera.external_url", "http://spooler.lan:8080")
+    config_set("camera.external_token", "TOK-123")
+    await mqtt_bridge.ensure_started()
+
+    msg = await broker.wait_for_publish("spooler/p1/camera/mjpeg_yaml")
+    assert msg.retain
+    text = msg.payload.decode()
+    assert "platform: mjpeg" in text
+    assert "http://spooler.lan:8080/api/camera/p1?token=TOK-123" in text
+    assert "http://spooler.lan:8080/api/snapshot/p1?token=TOK-123" in text
+
+
+async def test_camera_yaml_needs_the_config(broker, monkeypatch):
+    _register_printer(monkeypatch)
+    state.printers["p1"].camera_url = "http://192.0.2.5:8080/mjpeg"
+    await mqtt_bridge.ensure_started()
+    await broker.wait_for_publish("spooler/p1/state")
+    assert broker.payloads("spooler/p1/camera/mjpeg_yaml") == []
+    config_set("camera.external_url", "")            # token alone is not enough either
+    config_set("camera.external_token", "TOK-123")
+    state.publish("status_update", printer_id="p1", printer=state.printers["p1"].to_dict())
+    await asyncio.sleep(0.05)
+    assert broker.payloads("spooler/p1/camera/mjpeg_yaml") == []
+
+
+async def test_camera_yaml_republished_when_the_token_rotates(broker, monkeypatch):
+    _register_printer(monkeypatch)
+    state.printers["p1"].camera_url = "http://192.0.2.5:8080/mjpeg"
+    config_set("camera.external_url", "http://spooler.lan:8080")
+    config_set("camera.external_token", "TOK-1")
+    await mqtt_bridge.ensure_started()
+    await broker.wait_for_publish("spooler/p1/camera/mjpeg_yaml")
+
+    config_set("camera.external_token", "TOK-2")
+    state.publish("status_update", printer_id="p1", printer=state.printers["p1"].to_dict())
+    async def _has_v2():
+        while b"TOK-2" not in (broker.payloads("spooler/p1/camera/mjpeg_yaml") or [b""])[-1]:
+            await asyncio.sleep(0.01)
+    await asyncio.wait_for(_has_v2(), 2.0)
+
+
+async def test_camera_yaml_cleared_when_the_config_goes_away(broker, monkeypatch):
+    _register_printer(monkeypatch)
+    state.printers["p1"].camera_url = "http://192.0.2.5:8080/mjpeg"
+    config_set("camera.external_url", "http://spooler.lan:8080")
+    config_set("camera.external_token", "TOK-123")
+    await mqtt_bridge.ensure_started()
+    await broker.wait_for_publish("spooler/p1/camera/mjpeg_yaml")
+
+    config_set("camera.external_token", "")
+    state.publish("status_update", printer_id="p1", printer=state.printers["p1"].to_dict())
+    async def _cleared():
+        while b"" not in broker.payloads("spooler/p1/camera/mjpeg_yaml"):
+            await asyncio.sleep(0.01)
+    await asyncio.wait_for(_cleared(), 2.0)
