@@ -65,3 +65,83 @@ def test_canonical_temps_default_to_zero_like_the_ui():
     assert d["chamber_temp"] == 0 and d["chamber_target"] == 0
     assert d["layer"] == 0 and d["total_layer"] == 0
     assert d["time_remaining"] == 0 and d["speed_factor"] == 100
+
+
+# ── Canvas promotion (docs/adr-mqtt-bridge.md): to_dict["canvas"] ────────────
+# The raw blob both adapters pass through as status["canvas_info"] (CC1
+# CMD_CANVAS, CC2 method 2005) is mapped once, here, to canonical keys.
+# Verified live 2026-11-24 (CC2_INTEGRATION.md §4b): exactly nine per-tray
+# fields exist (filament_code is protocol noise and dropped); tray status
+# 0/1/2 is dynamic state (0 empty, 1 loaded/idle, 2 active); active_tray_id
+# -1 is transient (between prints / at start). Canonical keeps the numbers;
+# presentation decides how to render them.
+
+CANVAS_INFO = {
+    "active_canvas_id": 0,
+    "active_tray_id": 2,
+    "auto_refill": False,
+    "canvas_list": [{
+        "canvas_id": 0,
+        "connected": 1,
+        "tray_list": [
+            {"tray_id": 0, "status": 1, "brand": "ELEGOO", "filament_code": "0x0001",
+             "filament_color": "#FFFFFF", "filament_name": "PLA+", "filament_type": "PLA",
+             "min_nozzle_temp": 190, "max_nozzle_temp": 230},
+            {"tray_id": 1, "status": 1, "brand": "ELEGOO", "filament_code": "0x0001",
+             "filament_color": "#000000", "filament_name": "PLA+", "filament_type": "PLA",
+             "min_nozzle_temp": 190, "max_nozzle_temp": 230},
+            {"tray_id": 2, "status": 2, "brand": "ELEGOO", "filament_code": "0x0006",
+             "filament_color": "#FFFFFF", "filament_name": "PLA Matte", "filament_type": "PLA",
+             "min_nozzle_temp": 190, "max_nozzle_temp": 230},
+            {"tray_id": 3, "status": 0, "brand": "ELEGOO", "filament_code": "0x0100",
+             "filament_color": "#BCBCBC", "filament_name": "PETG", "filament_type": "PETG",
+             "min_nozzle_temp": 230, "max_nozzle_temp": 260},
+        ],
+    }],
+}
+
+
+def test_canvas_promoted_to_canonical_keys():
+    c = _p({"canvas_info": CANVAS_INFO}).to_dict()["canvas"]
+    assert c["active_tray"] == 2
+    assert c["trays"] == [
+        {"id": 0, "status": 1, "material": "PLA",  "name": "PLA+",      "brand": "ELEGOO", "color": "#FFFFFF",  "min_temp": 190, "max_temp": 230},
+        {"id": 1, "status": 1, "material": "PLA",  "name": "PLA+",      "brand": "ELEGOO", "color": "#000000",  "min_temp": 190, "max_temp": 230},
+        {"id": 2, "status": 2, "material": "PLA",  "name": "PLA Matte", "brand": "ELEGOO", "color": "#FFFFFF",  "min_temp": 190, "max_temp": 230},
+        {"id": 3, "status": 0, "material": "PETG", "name": "PETG",      "brand": "ELEGOO", "color": "#BCBCBC",  "min_temp": 230, "max_temp": 260},
+    ]
+
+
+def test_canvas_absent_is_none():
+    assert _p({}).to_dict()["canvas"] is None
+
+
+def test_canvas_negative_active_tray_passes_through():
+    ci = {**CANVAS_INFO, "active_tray_id": -1}
+    assert _p({"canvas_info": ci}).to_dict()["canvas"]["active_tray"] == -1
+
+
+def test_canvas_raw_blob_still_reaches_the_browser():
+    # The browser keeps reading status.canvas_info unchanged.
+    p = _p({"canvas_info": CANVAS_INFO})
+    p.to_dict()
+    assert p.status["canvas_info"] is CANVAS_INFO
+
+
+def test_canvas_skips_malformed_tray_entries():
+    ci = {"active_tray_id": 1, "canvas_list": [
+        {"canvas_id": 0, "tray_list": [
+            {"tray_id": 0, "filament_type": "PLA", "status": 2},
+        ]},
+        {"canvas_id": 1, "tray_list": ["junk", None, {"no_id": True}]},
+    ]}
+    c = _p({"canvas_info": ci}).to_dict()["canvas"]
+    assert c == {"active_tray": 1, "trays": [
+        {"id": 0, "status": 2, "material": "PLA", "name": None, "brand": None,
+         "color": None, "min_temp": None, "max_temp": None},
+    ]}
+
+
+def test_canvas_without_trays_is_none():
+    ci = {"active_tray_id": -1, "canvas_list": [{"canvas_id": 0, "tray_list": []}]}
+    assert _p({"canvas_info": ci}).to_dict()["canvas"] is None

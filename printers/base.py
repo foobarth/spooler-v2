@@ -149,6 +149,42 @@ def _progress_percent(pi: dict):
     return None
 
 
+def _canonical_canvas(ci) -> dict | None:
+    """The raw canvas blob both adapters pass through as status["canvas_info"]
+    (CC1 CMD_CANVAS, CC2 method 2005) mapped once to canonical keys.
+    Verified live 2026-11-24 (CC2_INTEGRATION.md §4b): the printer reports
+    exactly nine per-tray fields — filament_code is protocol noise and is
+    dropped; tray status 0/1/2 is dynamic state (0 empty, 1 loaded/idle,
+    2 active); active_tray_id -1 is transient (between prints / at start).
+    Canonical keeps the numbers; presentation decides how to render them.
+    The browser keeps reading status["canvas_info"] unchanged."""
+    if not isinstance(ci, dict):
+        return None
+    trays = []
+    for c in ci.get("canvas_list") or []:
+        if not isinstance(c, dict):
+            continue
+        for t in c.get("tray_list") or []:
+            if not isinstance(t, dict) or "tray_id" not in t:
+                continue
+            trays.append({
+                "id":       t.get("tray_id"),
+                "status":   t.get("status"),
+                "material": t.get("filament_type"),
+                "name":     t.get("filament_name"),
+                "brand":    t.get("brand"),
+                "color":    t.get("filament_color"),
+                "min_temp": t.get("min_nozzle_temp"),
+                "max_temp": t.get("max_nozzle_temp"),
+            })
+    if not trays:
+        return None
+    return {
+        "active_tray": ci.get("active_tray_id", -1),
+        "trays":       trays,
+    }
+
+
 def classify_display_state(connected: bool, status_code, busy_between_prints: bool = False) -> str:
     """Map (connected, raw status code) to one of: offline, idle, preparing,
     printing, pausing, paused, stopping, complete, cancelled, error, unknown.
@@ -402,6 +438,10 @@ class PrinterConnection:
             "total_layer":     pi.get("TotalLayer") or 0,
             "time_remaining":  pi.get("RemainTime") or 0,
             "speed_factor":    _first_num(status, "SpeedFactor", default=100),
+            # Canonical Canvas: protocol key differences end here, same rule
+            # as the numeric keys above. None when the printer reports no
+            # tray data at all.
+            "canvas":          _canonical_canvas(self.status.get("canvas_info")),
         }
 
     def save_accounting_now(self) -> None:

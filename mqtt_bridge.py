@@ -67,6 +67,10 @@ SENSORS = [
 
 BINARY_SENSORS = [("connected", "Connected"), ("printing", "Printing")]
 
+# Tray status 0/1/2, verified live 2026-11-24: dynamic state, not static
+# config — the previously active tray moves 2→1 when the active tray changes.
+_TRAY_STATUS = {0: "empty", 1: "loaded", 2: "active"}
+
 
 def _state_topic(pid: str) -> str:
     return f"spooler/{pid}/state"
@@ -130,6 +134,24 @@ def _discovery_messages(pid: str, d: dict):
     for key, name in BINARY_SENSORS:
         payload = _entity_payload(pid, d, "binary_sensor", key, name, binary=True)
         yield _discovery_topic("binary_sensor", pid, key), json.dumps(payload)
+    canvas = d.get("canvas")
+    if isinstance(canvas, dict) and canvas.get("trays"):
+        yield from _canvas_entities(pid, d, canvas)
+
+
+def _canvas_entities(pid: str, d: dict, canvas: dict):
+    """(topic, json payload) for one printer's Canvas entities: the active
+    tray plus status/material/brand/color per tray the printer reports."""
+    yield _discovery_topic("sensor", pid, "canvas_active_tray"), json.dumps(
+        _entity_payload(pid, d, "sensor", "canvas_active_tray", "Active tray"))
+    for t in canvas.get("trays") or []:
+        tid = t.get("id")
+        if not isinstance(tid, int) or tid < 0:
+            continue
+        for suffix in ("status", "material", "brand", "color"):
+            key = f"canvas_tray{tid}_{suffix}"
+            payload = _entity_payload(pid, d, "sensor", key, f"Tray {tid + 1} {suffix}")
+            yield _discovery_topic("sensor", pid, key), json.dumps(payload)
 
 
 # ── state projection ─────────────────────────────────────────────────────────
@@ -139,7 +161,7 @@ def _discovery_messages(pid: str, d: dict):
 
 def bridge_state(printer: dict) -> dict:
     """Thin projection of a printer's to_dict() for the state topic."""
-    return {
+    out = {
         "state":            printer.get("state"),
         "connected":        bool(printer.get("connected")),
         "printing":         printer.get("state") == "printing",
@@ -158,6 +180,22 @@ def bridge_state(printer: dict) -> dict:
         "speed_factor":     printer.get("speed_factor"),
         "firmware_version": printer.get("firmware_version"),
     }
+    # Canvas: only the canonical keys are read (the raw canvas_info blob is
+    # never seen here). The -1/0/1/2 semantics verified live (§4b) are
+    # rendered exactly once, in this presentation layer.
+    canvas = printer.get("canvas")
+    if isinstance(canvas, dict) and canvas.get("trays"):
+        active = canvas.get("active_tray")
+        out["canvas_active_tray"] = active if isinstance(active, int) and active >= 0 else "none"
+        for t in canvas["trays"]:
+            tid = t.get("id")
+            if not isinstance(tid, int) or tid < 0:
+                continue
+            out[f"canvas_tray{tid}_status"]   = _TRAY_STATUS.get(t.get("status"), "unknown")
+            out[f"canvas_tray{tid}_material"] = t.get("material")
+            out[f"canvas_tray{tid}_brand"]    = t.get("brand")
+            out[f"canvas_tray{tid}_color"]    = t.get("color")
+    return out
 
 
 def _broker_params():
@@ -219,7 +257,17 @@ class _Sent:
 
 
 _published: dict = {}       # printer_id -> _Sent (what the topic holds right now)
+_announced_canvas: dict = {}  # printer_id -> set of tray ids with discovery out
 _client = None              # the live aiomqtt client, set while connected
+
+
+def _canvas_tray_ids(canvas: dict) -> set:
+    return {t.get("id") for t in canvas.get("trays") or []
+            if isinstance(t.get("id"), int) and t.get("id") >= 0}
+
+
+def _note_canvas_announced(pid: str, canvas: dict) -> None:
+    _announced_canvas[pid] = _canvas_tray_ids(canvas)
 
 
 async def on_status(payload: dict) -> None:
@@ -228,6 +276,18 @@ async def on_status(payload: dict) -> None:
     if not pid or not d or _client is None:
         return
     fresh = bridge_state(d)
+    # A canvas the bridge has not discovered yet (e.g. the printer's 30 s
+    # Canvas poll landed after the bridge connected): announce its entities
+    # now and publish the state immediately — the new entities should not
+    # sit behind the numeric throttle reading "unknown".
+    canvas = d.get("canvas")
+    if isinstance(canvas, dict) and canvas.get("trays") \
+            and _canvas_tray_ids(canvas) - _announced_canvas.get(pid, set()):
+        for topic, cfg in _canvas_entities(pid, d, canvas):
+            await _client.publish(topic, cfg, retain=True)
+        _note_canvas_announced(pid, canvas)
+        await _publish_state(pid, fresh)
+        return
     sent = _published.setdefault(pid, _Sent())
     if sent.json is None:
         await _publish_state(pid, fresh)        # first sight after (re)connect
@@ -252,6 +312,9 @@ async def _announce(client) -> None:
         d = _printer_dict(pr)
         for topic, payload in _discovery_messages(pid, d):
             await client.publish(topic, payload, retain=True)
+        canvas = d.get("canvas")
+        if isinstance(canvas, dict):
+            _note_canvas_announced(pid, canvas)
         fresh = bridge_state(d)
         await client.publish(_state_topic(pid), json.dumps(fresh), retain=True)
         sent = _published.setdefault(pid, _Sent())

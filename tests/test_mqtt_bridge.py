@@ -15,6 +15,7 @@ import fake_mqtt
 import mqtt_bridge
 import state
 from config import set as config_set
+from printers.base import PrinterConnection
 
 
 @pytest.fixture
@@ -23,6 +24,7 @@ async def broker(monkeypatch):
     await b.start()
     config_set("mqtt.url", f"mqtt://127.0.0.1:{b.port}")
     monkeypatch.setattr(mqtt_bridge, "_published", {})
+    monkeypatch.setattr(mqtt_bridge, "_announced_canvas", {})
     monkeypatch.setattr(mqtt_bridge, "_client", None)
     yield b
     await mqtt_bridge.stop_and_clear()
@@ -160,3 +162,104 @@ async def test_a_transition_is_never_throttled_even_inside_the_window(broker, mo
     state.publish("status_update", printer_id="p1", printer=pr.to_dict())
     await _wait_for_publish_after(broker, "spooler/p1/state", n)
     assert json.loads(broker.payloads("spooler/p1/state")[-1])["printing"] is True
+
+
+# ── Canvas: canonical to_dict["canvas"] projected + discovered ──────────────
+# The sensors read only the canonical keys (docs/adr-mqtt-bridge.md); raw
+# -1/0/1/2 semantics are rendered here, at the presentation layer.
+
+CANVAS_INFO = {
+    "active_canvas_id": 0,
+    "active_tray_id": 2,
+    "auto_refill": False,
+    "canvas_list": [{
+        "canvas_id": 0, "connected": 1,
+        "tray_list": [
+            {"tray_id": 0, "status": 1, "brand": "ELEGOO", "filament_code": "0x0001",
+             "filament_color": "#FFFFFF", "filament_name": "PLA+", "filament_type": "PLA",
+             "min_nozzle_temp": 190, "max_nozzle_temp": 230},
+            {"tray_id": 2, "status": 2, "brand": "ELEGOO", "filament_code": "0x0006",
+             "filament_color": "#FFFFFF", "filament_name": "PLA Matte", "filament_type": "PLA",
+             "min_nozzle_temp": 190, "max_nozzle_temp": 230},
+            {"tray_id": 3, "status": 0, "brand": "ELEGOO", "filament_code": "0x0100",
+             "filament_color": "#BCBCBC", "filament_name": "PETG", "filament_type": "PETG",
+             "min_nozzle_temp": 230, "max_nozzle_temp": 260},
+        ],
+    }],
+}
+
+
+def test_bridge_state_projects_canvas_canonical_keys():
+    pr = PrinterConnection("p1", "192.0.2.5", "Workshop")
+    pr.status = {"canvas_info": CANVAS_INFO}
+    out = mqtt_bridge.bridge_state(pr.to_dict())
+    assert out["canvas_active_tray"] == 2          # numbers stay numbers
+    assert out["canvas_tray2_status"] == "active"  # 0/1/2 rendered once, here
+    assert out["canvas_tray2_material"] == "PLA"
+    assert out["canvas_tray2_brand"] == "ELEGOO"
+    assert out["canvas_tray2_color"] == "#FFFFFF"
+    assert out["canvas_tray3_status"] == "empty"
+    assert out["canvas_tray0_status"] == "loaded"
+
+
+def test_bridge_state_renders_negative_active_tray_as_none():
+    ci = {**CANVAS_INFO, "active_tray_id": -1}
+    pr = PrinterConnection("p1", "192.0.2.5", "Workshop")
+    pr.status = {"canvas_info": ci}
+    out = mqtt_bridge.bridge_state(pr.to_dict())
+    assert out["canvas_active_tray"] == "none"     # never invent a tray 0
+
+
+def test_bridge_state_without_canvas_has_no_canvas_keys():
+    pr = PrinterConnection("p1", "192.0.2.5", "Workshop")
+    pr.status = {}
+    out = mqtt_bridge.bridge_state(pr.to_dict())
+    assert not [k for k in out if k.startswith("canvas_")]
+
+
+async def test_connect_discovers_canvas_entities(broker, monkeypatch):
+    _register_printer(monkeypatch, canvas_info=CANVAS_INFO)
+    await mqtt_bridge.ensure_started()
+
+    cfg = await broker.wait_for_publish("homeassistant/sensor/spooler/p1/canvas_tray2_status/config")
+    assert cfg.retain
+    payload = json.loads(cfg.payload)
+    assert payload["name"] == "Tray 3 status"      # tray_id + 1, like the browser
+    assert "value_json.canvas_tray2_status" in payload["value_template"]
+    assert payload["unique_id"] == "spooler-p1-canvas_tray2_status"
+
+    topics = {p.topic for p in broker.topics("homeassistant")}
+    for key in ("canvas_active_tray", "canvas_tray0_status", "canvas_tray0_material",
+                "canvas_tray0_brand", "canvas_tray0_color",
+                "canvas_tray2_status", "canvas_tray2_material",
+                "canvas_tray3_status", "canvas_tray3_color"):
+        assert f"homeassistant/sensor/spooler/p1/{key}/config" in topics, key
+
+
+async def test_no_canvas_no_canvas_discovery(broker, monkeypatch):
+    _register_printer(monkeypatch)
+    await mqtt_bridge.ensure_started()
+    await broker.wait_for_publish("spooler/p1/state")
+    assert not [p for p in broker.topics("homeassistant") if "canvas" in p.topic]
+
+
+async def test_canvas_arriving_later_still_gets_discovered(broker, monkeypatch):
+    pr = _register_printer(monkeypatch)
+    await mqtt_bridge.ensure_started()
+    await broker.wait_for_publish("spooler/p1/state")
+    assert not [p for p in broker.topics("homeassistant") if "canvas" in p.topic]
+
+    pr.status["canvas_info"] = CANVAS_INFO          # the 30 s poll lands
+    state.publish("status_update", printer_id="p1", printer=pr.to_dict())
+
+    cfg = await broker.wait_for_publish("homeassistant/sensor/spooler/p1/canvas_tray2_status/config")
+    payload = json.loads(cfg.payload)
+    assert payload["name"] == "Tray 3 status"
+    # and the fresh state (with the canvas keys) is published right away, not
+    # left behind the numeric throttle for the new entities to read as unknown
+    async def _state_has_canvas():
+        while "canvas_active_tray" not in json.loads(broker.payloads("spooler/p1/state")[-1]):
+            await asyncio.sleep(0.01)
+    await asyncio.wait_for(_state_has_canvas(), 2.0)
+    last = json.loads(broker.payloads("spooler/p1/state")[-1])
+    assert last["canvas_active_tray"] == 2
