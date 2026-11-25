@@ -1,5 +1,12 @@
 [
   {
+    "version": "2.4.0-beta.3",
+    "date": "2026-11-25",
+    "changes": [
+      "The 'Home Assistant MQTT bridge' and 'Webhook buttons' switches now appear on the Features page; a feature that needs settings shows a hint until they are set"
+    ]
+  },
+  {
     "version": "2.4.0-beta.2",
     "date": "2026-11-25",
     "changes": [
