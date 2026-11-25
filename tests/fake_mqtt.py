@@ -64,6 +64,7 @@ class FakeBroker:
         self.port: int | None = None
         self._server: asyncio.AbstractServer | None = None
         self._writer: asyncio.StreamWriter | None = None
+        self._handlers: set[asyncio.Task] = set()
         self._clean_disconnect = True
         self._will: RecordedConnect | None = None
 
@@ -74,10 +75,14 @@ class FakeBroker:
     async def stop(self) -> None:
         if self._writer:
             self._writer.close()
+        # Python 3.12's Server.wait_closed() waits for client handlers too and
+        # hangs when a client leaves its TCP connection open behind the server
+        # (aiomqtt's clean context exit can do exactly that). Close what we
+        # know about and await the handler tasks we tracked instead.
+        if self._handlers:
+            await asyncio.wait(self._handlers)
         if self._server:
             self._server.close()
-            await self._server.wait_closed()
-
     async def drop_client(self) -> None:
         """Close the TCP connection without a DISCONNECT packet — the broker
         then synthesizes the client's LWT will publish, which is how tests
@@ -88,6 +93,8 @@ class FakeBroker:
             self._writer = None
 
     async def _handle(self, reader, writer) -> None:
+        handler = asyncio.current_task()
+        self._handlers.add(handler)
         self._writer = writer
         self._clean_disconnect = True
         try:
@@ -121,6 +128,7 @@ class FakeBroker:
         finally:
             if writer is self._writer:
                 self._writer = None
+            self._handlers.discard(handler)
 
     @staticmethod
     def _parse_connect(flags: int, body: bytes) -> RecordedConnect:
