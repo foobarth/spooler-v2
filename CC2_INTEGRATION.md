@@ -119,7 +119,7 @@ in progress:
 ```
 result.print_status.state            → 'printing' observed mid-print        ✅
 result.print_status.print_duration   → seconds elapsed                      ✅
-result.print_status.total_duration   → the printer's OWN total (unused by Spooler; it computes duration+remaining) ✅
+result.print_status.total_duration   → elapsed since job start INCLUDING warmup: grows 1:1 with wall time (verified: 0→1859 while print_duration went 0→1784, a near-constant ~76 s heating offset). NOT the file total — that is method 1046's print_time (already used as _expected_print_time_s). Do not adopt it as a denominator. ✅
 result.print_status.remaining_time_sec / current_layer / total_layer / filename / uuid ✅
 result.print_status.bed_mesh_detect / enable / filament_detect → booleans, unused so far ✅
 result.machine_status.status / sub_status / progress / exception_status → as in §4 ✅
