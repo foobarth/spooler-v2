@@ -151,6 +151,10 @@ async function loadIntegrations() {
 }
 
 const _INTEGRATION_GROUPS = [
+  { title: "Home Assistant (MQTT)", prefix: "mqtt.", testKey: null,
+    help: "Spooler bridges all of your printers to your own MQTT broker, and Home Assistant discovers them as devices: status, temperatures, progress, layers, filament use, Canvas tray info and a snapshot camera. Enter the broker address Spooler should publish to (for example mqtt://mosquitto:1883), then turn on 'Home Assistant MQTT bridge' under Features. New printers are bridged automatically; switching the bridge off (or clearing this address) removes everything from Home Assistant again." },
+  { title: "Realtime camera (Home Assistant)", prefix: "camera.", testKey: null,
+    help: "Optional: beyond the ~10 s snapshot camera, a realtime live picture. Enter the address Home Assistant uses to reach Spooler (for example http://spooler.lan:8080) — the bridge then publishes paste-ready camera YAML for every printer to MQTT (topic spooler/<printer>/camera/mjpeg_yaml). The image URLs carry a token; generate one with the button below and the published YAML updates automatically." },
   { title: "Spoolman", prefix: "spoolman.", testKey: "spoolman" },
   { title: "Slicer",   prefix: "slicer.",   testKey: null },
   { title: "Spaghetti detection (Obico)", prefix: "spaghetti.", testKey: "spaghetti",
@@ -200,6 +204,8 @@ function _renderIntegrationsList() {
       const value = f.type === "secret" ? "" : escAttr(f.value ?? "");
       const removeBtn = (f.type === "secret" && f.set)
         ? `<button type="button" class="btn btn-secondary btn-sm" data-clear-key="${escAttr(f.key)}">Remove</button>` : "";
+      const generateBtn = f.key === "camera.external_token"
+        ? `<button type="button" class="btn btn-secondary btn-sm" data-generate-camera-token>New token</button>` : "";
       return `
         <div class="integration-field">
           <label>${escHtml(f.label)}
@@ -208,6 +214,7 @@ function _renderIntegrationsList() {
           </label>
           <div class="integration-field-meta">
             <span class="integration-source-badge">${escHtml(sourceLabel)}</span>
+            ${generateBtn}
             ${removeBtn}
           </div>
           ${lockedNote}
@@ -253,6 +260,22 @@ function _renderIntegrationsList() {
         integrations.tests[key] = { ok: false, message: e.message };
       }
       _renderIntegrationsList();
+    });
+  });
+
+  container.querySelectorAll("button[data-generate-camera-token]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        const r = await fetch("/api/camera-token", { method: "POST" });
+        const data = await r.json();
+        if (!r.ok) { toast(data.error || "Could not generate a token", true); return; }
+        toast("New camera token generated — the published camera YAML updates on the next status");
+      } catch (e) {
+        toast("Could not generate a token: " + e.message, true);
+      } finally {
+        btn.disabled = false;
+      }
     });
   });
 

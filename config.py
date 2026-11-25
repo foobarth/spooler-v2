@@ -100,7 +100,8 @@ FIELDS: dict = {
     "mqtt.url": Field(
         key="mqtt.url", label="MQTT broker address (Home Assistant bridge)", type="url",
         env="MQTT_URL", default="", schemes=("mqtt",),
-    ),    "mqtt.username": Field(
+    ),
+    "mqtt.username": Field(
         key="mqtt.username", label="MQTT username (optional)", type="text", default="",
         env="MQTT_USERNAME",
     ),
