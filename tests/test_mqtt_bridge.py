@@ -24,7 +24,6 @@ async def broker(monkeypatch):
     await b.start()
     config_set("mqtt.url", f"mqtt://127.0.0.1:{b.port}")
     monkeypatch.setattr(mqtt_bridge, "_published", {})
-    monkeypatch.setattr(mqtt_bridge, "_announced_canvas", {})
     monkeypatch.setattr(mqtt_bridge, "_discovered", {})
     monkeypatch.setattr(mqtt_bridge, "_client", None)
     yield b
@@ -334,3 +333,59 @@ async def test_stop_and_clear_keeps_the_record_when_the_broker_is_gone(broker, m
     await broker.stop()                 # broker unreachable at clear time
     await mqtt_bridge.stop_and_clear()
     assert mqtt_bridge._discovered, "the record must survive so the next clear can retry"
+
+
+# ── camera: discovered MQTT camera fed by snapshots while printing ───────────
+
+def _printing_printer(monkeypatch, **status):
+    pr = _register_printer(monkeypatch, **status)
+    pr.connected = True
+    pr.camera_url = "http://192.0.2.5:8080/mjpeg"
+    pr.status["PrintInfo"]["Status"] = 2
+    return pr
+
+
+async def test_connect_discovers_the_camera_when_the_printer_has_one(broker, monkeypatch):
+    _register_printer(monkeypatch)
+    pr = state.printers["p1"]
+    pr.camera_url = "http://192.0.2.5:8080/mjpeg"
+    await mqtt_bridge.ensure_started()
+
+    cfg = await broker.wait_for_publish("homeassistant/camera/spooler/p1/camera/config")
+    assert cfg.retain
+    payload = json.loads(cfg.payload)
+    assert payload["topic"] == "spooler/p1/camera/frame"
+    assert payload["unique_id"] == "spooler-p1-camera"
+    assert payload["availability_topic"] == "spooler/bridge/availability"
+
+
+async def test_no_camera_url_no_camera_discovery(broker, monkeypatch):
+    _register_printer(monkeypatch)
+    await mqtt_bridge.ensure_started()
+    await broker.wait_for_publish("spooler/p1/state")
+    assert not [p for p in broker.topics("homeassistant") if p.topic.startswith("homeassistant/camera/")]
+
+
+async def test_camera_frames_flow_while_printing(broker, monkeypatch):
+    import mqtt_bridge as mb
+    monkeypatch.setattr(mb, "CAMERA_INTERVAL_S", 0.05)
+    monkeypatch.setattr(mb, "grab_jpeg", lambda url, timeout=5.0: b"jpeg-" + url.encode())
+    _printing_printer(monkeypatch)
+    await mqtt_bridge.ensure_started()
+
+    frame = await broker.wait_for_publish("spooler/p1/camera/frame")
+    assert frame.payload == b"jpeg-http://192.0.2.5:8080/mjpeg"
+    assert not frame.retain             # a stale frame must not outlive the stream
+
+
+async def test_camera_feeder_rests_while_not_printing(broker, monkeypatch):
+    import mqtt_bridge as mb
+    monkeypatch.setattr(mb, "CAMERA_INTERVAL_S", 0.05)
+    grabs = []
+    monkeypatch.setattr(mb, "grab_jpeg", lambda url, timeout=5.0: grabs.append(url) or b"jpeg")
+    _register_printer(monkeypatch)          # connected, but idle — not printing
+    state.printers["p1"].connected = True
+    state.printers["p1"].camera_url = "http://192.0.2.5:8080/mjpeg"
+    await mqtt_bridge.ensure_started()
+    await asyncio.sleep(0.15)
+    assert not grabs, "an idle printer gets no frames"

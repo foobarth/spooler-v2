@@ -24,8 +24,10 @@ except ImportError:     # bridge stays off when the optional dep is absent
 import config
 import features
 import state
+from snapshot import grab_jpeg
 
 NUMERIC_THROTTLE_S = 5.0    # numerics republish at most this often
+CAMERA_INTERVAL_S = 10.0    # snapshot cadence while a print is running
 
 _client_id = "spooler-bridge"
 
@@ -74,6 +76,10 @@ _TRAY_STATUS = {0: "empty", 1: "loaded", 2: "active"}
 
 def _state_topic(pid: str) -> str:
     return f"spooler/{pid}/state"
+
+
+def _camera_topic(pid: str) -> str:
+    return f"spooler/{pid}/camera/frame"
 
 
 def _discovery_topic(component: str, pid: str, key: str) -> str:
@@ -137,6 +143,14 @@ def _discovery_messages(pid: str, d: dict):
     canvas = d.get("canvas")
     if isinstance(canvas, dict) and canvas.get("trays"):
         yield from _canvas_entities(pid, d, canvas)
+    if d.get("camera_url"):
+        yield _discovery_topic("camera", pid, "camera"), json.dumps({
+            "name": "Camera",
+            "unique_id": f"spooler-{pid}-camera",
+            "topic": _camera_topic(pid),
+            "availability_topic": BRIDGE_AVAILABILITY,
+            "device": _device(pid, d),
+        })
 
 
 def _canvas_entities(pid: str, d: dict, canvas: dict):
@@ -209,6 +223,21 @@ def _broker_params():
     )
 
 
+async def _camera_tick(client) -> None:
+    """One snapshot round for every printing/paused printer with a camera,
+    roughly every CAMERA_INTERVAL_S (ADR: ~10 s while printing, nothing
+    when idle/offline). Frames are not retained — a stale frame must not
+    outlive the stream."""
+    loop = asyncio.get_running_loop()
+    for pid, pr in list(state.printers.items()):
+        d = _printer_dict(pr)
+        if d.get("state") not in ("printing", "paused") or not d.get("camera_url"):
+            continue
+        jpeg = await loop.run_in_executor(None, grab_jpeg, d["camera_url"])
+        if jpeg:
+            await client.publish(_camera_topic(pid), jpeg)
+
+
 async def _run():
     global _running, _client
     hostname, port, username, password = _broker_params()
@@ -224,9 +253,9 @@ async def _run():
                 try:
                     delay = 1.0
                     await _announce(client)
-                    # Status fan-out hook arrives with its own slice; idle-wait here.
                     while _running:
-                        await asyncio.sleep(3600)
+                        await _camera_tick(client)
+                        await asyncio.sleep(CAMERA_INTERVAL_S)
                 finally:
                     _client = None
         except aiomqtt.MqttError:
@@ -257,7 +286,6 @@ class _Sent:
 
 
 _published: dict = {}       # printer_id -> _Sent (what the topic holds right now)
-_announced_canvas: dict = {}  # printer_id -> set of tray ids with discovery out
 _discovered: dict = {}      # printer_id -> discovery topics announced (what stop_and_clear must empty)
 _client = None              # the live aiomqtt client, set while connected
 
@@ -276,13 +304,16 @@ async def _publish_discovery(pid: str, msgs) -> None:
                 known.append(t)
 
 
-def _canvas_tray_ids(canvas: dict) -> set:
-    return {t.get("id") for t in canvas.get("trays") or []
-            if isinstance(t.get("id"), int) and t.get("id") >= 0}
-
-
-def _note_canvas_announced(pid: str, canvas: dict) -> None:
-    _announced_canvas[pid] = _canvas_tray_ids(canvas)
+async def _sync_discovery(pid: str, d: dict) -> bool:
+    """Announce discovery topics the printer deserves but that were never
+    published — late-arriving canvas (the 30 s poll), a camera appearing.
+    True when something went out."""
+    known = set(_discovered.get(pid, []))
+    msgs = [(t, p) for t, p in _discovery_messages(pid, d) if t not in known]
+    if not msgs:
+        return False
+    await _publish_discovery(pid, msgs)
+    return True
 
 
 async def on_status(payload: dict) -> None:
@@ -291,15 +322,11 @@ async def on_status(payload: dict) -> None:
     if not pid or not d or _client is None:
         return
     fresh = bridge_state(d)
-    # A canvas the bridge has not discovered yet (e.g. the printer's 30 s
-    # Canvas poll landed after the bridge connected): announce its entities
-    # now and publish the state immediately — the new entities should not
-    # sit behind the numeric throttle reading "unknown".
-    canvas = d.get("canvas")
-    if isinstance(canvas, dict) and canvas.get("trays") \
-            and _canvas_tray_ids(canvas) - _announced_canvas.get(pid, set()):
-        await _publish_discovery(pid, _canvas_entities(pid, d, canvas))
-        _note_canvas_announced(pid, canvas)
+    # A printer gained discoverable extras since the last announce (canvas
+    # trays from the 30 s poll, a camera that appeared): announce what is
+    # missing and publish the state right away — the new entities should
+    # not sit behind the numeric throttle reading "unknown".
+    if await _sync_discovery(pid, d):
         await _publish_state(pid, fresh)
         return
     sent = _published.setdefault(pid, _Sent())
@@ -325,9 +352,6 @@ async def _announce(client) -> None:
     for pid, pr in list(state.printers.items()):
         d = _printer_dict(pr)
         await _publish_discovery(pid, _discovery_messages(pid, d))
-        canvas = d.get("canvas")
-        if isinstance(canvas, dict):
-            _note_canvas_announced(pid, canvas)
         fresh = bridge_state(d)
         await client.publish(_state_topic(pid), json.dumps(fresh), retain=True)
         sent = _published.setdefault(pid, _Sent())
@@ -386,4 +410,3 @@ async def _clear_discovery():
         return
     _discovered.clear()
     _published.clear()
-    _announced_canvas.clear()
