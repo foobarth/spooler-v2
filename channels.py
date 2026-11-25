@@ -7,7 +7,10 @@ time, so tests reset cleanly. Each subscriber translates the event envelope
 printer objects look them up via state.printers.
 """
 
+import config
+import asyncio
 import dataset
+import features
 import job_queue
 import mqtt_bridge
 import state
@@ -29,13 +32,56 @@ def wire() -> None:
     _wire_mqtt_bridge()
 
 
+_bridge_hook_removers: list = []     # this channel's listeners, taken back on re-wire
+
+
 def _wire_mqtt_bridge() -> None:
     """The MQTT bridge is a channel like the others: it subscribes instead of
-    being called from the printer core (ADR-0001 + ADR-0002)."""
+    being called from the printer core (ADR-0001 + ADR-0002). Its lifecycle
+    lives here too: started at startup and on every feature-flag or broker-URL
+    change, stopped and cleared when either turns off ("off means off")."""
     async def status(payload: dict) -> None:
         await mqtt_bridge.on_status(payload)
 
     state.subscribe("status_update", status)
+
+    async def sync_lifecycle() -> None:
+        if features.is_enabled("mqtt_bridge") and config.get("mqtt.url"):
+            await mqtt_bridge.ensure_started()
+        else:
+            await mqtt_bridge.stop_and_clear()
+
+    _lifecycle_tasks: set = set()    # strong refs, like state's _dispatched
+
+    def schedule() -> None:
+        """Run the lifecycle sync wherever we are: on the running loop, on the
+        remembered main loop (sync or thread contexts), or inline on a
+        throwaway loop when no loop exists — same fallback chain as
+        state.publish(). Never dropped silently."""
+        coro = mqtt_bridge.sync_lifecycle()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None:
+            task = loop.create_task(coro)
+            _lifecycle_tasks.add(task)
+            task.add_done_callback(_lifecycle_tasks.discard)
+        elif state.main_loop() is not None:
+            asyncio.run_coroutine_threadsafe(coro, state.main_loop())
+        else:
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(coro)
+            finally:
+                loop.close()
+
+    for r in _bridge_hook_removers:
+        r()
+    _bridge_hook_removers.clear()
+    _bridge_hook_removers.append(features.on_change("mqtt_bridge", lambda enabled: schedule()))
+    _bridge_hook_removers.append(config.on_change("mqtt.url", lambda key, value: schedule()))
+    schedule()      # startup
 
 
 def _wire_dataset() -> None:

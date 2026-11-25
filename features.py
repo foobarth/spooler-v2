@@ -263,8 +263,17 @@ def on_change(key: str, callback) -> None:
     state changes via set_enabled() (including cascaded changes). Lets a
     background job start/stop immediately instead of needing a restart --
     nothing currently registered here has such a job, but the registry pattern
-    is ready for the first feature that does (e.g. a future MQTT connection)."""
+    is ready for the first feature that does (e.g. a future MQTT connection).
+    Returns a remover, so the registrant (e.g. channels.wire) can take its
+    listener back when re-wired."""
     _on_change_callbacks.setdefault(key, []).append(callback)
+
+    def remove() -> None:
+        callbacks = _on_change_callbacks.get(key, [])
+        if callback in callbacks:
+            callbacks.remove(callback)
+
+    return remove
 
 
 def requires_feature(key: str):

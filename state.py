@@ -57,6 +57,15 @@ def remember_loop() -> None:
     _main_loop = asyncio.get_running_loop()
 
 
+def main_loop() -> asyncio.AbstractEventLoop | None:
+    """The loop publish() dispatches on, or None before startup / after
+    shutdown. Lets background jobs schedule work on the main loop from sync
+    or thread contexts."""
+    if _main_loop is not None and _main_loop.is_closed():
+        return None
+    return _main_loop
+
+
 def publish(event: str, printer_id: str = "", printer: dict | None = None,
             data: dict | None = None) -> None:
     """Fire-and-forget dispatch of one event to its subscribers. Sync-safe:

@@ -64,6 +64,7 @@ class FakeBroker:
         self.port: int | None = None
         self._server: asyncio.AbstractServer | None = None
         self._writer: asyncio.StreamWriter | None = None
+        self._writers: set = set()
         self._handlers: set[asyncio.Task] = set()
         self._clean_disconnect = True
         self._will: RecordedConnect | None = None
@@ -73,8 +74,8 @@ class FakeBroker:
         self.port = self._server.sockets[0].getsockname()[1]
 
     async def stop(self) -> None:
-        if self._writer:
-            self._writer.close()
+        for w in self._writers:
+            w.close()
         # Python 3.12's Server.wait_closed() waits for client handlers too and
         # hangs when a client leaves its TCP connection open behind the server
         # (aiomqtt's clean context exit can do exactly that). Close what we
@@ -95,6 +96,7 @@ class FakeBroker:
     async def _handle(self, reader, writer) -> None:
         handler = asyncio.current_task()
         self._handlers.add(handler)
+        self._writers.add(writer)
         self._writer = writer
         self._clean_disconnect = True
         try:
@@ -128,6 +130,7 @@ class FakeBroker:
         finally:
             if writer is self._writer:
                 self._writer = None
+            self._writers.discard(writer)
             self._handlers.discard(handler)
 
     @staticmethod
