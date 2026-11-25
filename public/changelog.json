@@ -1,6 +1,6 @@
 [
   {
-    "version": "2.3.9-beta.1",
+    "version": "2.4.0-beta.1",
     "date": "2026-11-25",
     "changes": [
       "Preview: read-only Home Assistant MQTT bridge — all printers auto-bridged to your own broker with HA discovery: status, temperatures, progress, layers, filament, Canvas tray info (material/color/brand per tray, active tray), a ~10 s snapshot camera while printing, availability with last-will, and everything vanishes from Home Assistant when you switch the bridge off. Realtime MJPEG camera URLs accept a revocable external token for image URLs (?token=), and the bridge publishes paste-ready HA camera YAML when you set your Spooler address in the settings"
