@@ -135,7 +135,9 @@ def _template(key: str, nullable: bool) -> str:
 
 def _device(pid: str, d: dict) -> dict:
     t = d.get("printer_type")
-    dev = {"identifiers": [pid], "name": d.get("name") or pid}
+    # "Spooler <printer name>" so the device is findable in HA by both names —
+    # a device named only like the printer is invisible to a "spooler" search.
+    dev = {"identifiers": [pid], "name": f"Spooler {d.get('name') or pid}"}
     model = TYPE_MODELS.get(t)
     if model:
         dev["model"] = model

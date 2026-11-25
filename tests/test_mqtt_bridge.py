@@ -82,7 +82,7 @@ async def test_connect_publishes_retained_discovery_with_device_info(broker, mon
     assert payload["unit_of_measurement"] == "°C"
     assert payload["device_class"] == "temperature"
     assert payload["device"]["identifiers"] == ["p1"]
-    assert payload["device"]["name"] == "Workshop"
+    assert payload["device"]["name"] == "Spooler Workshop"
     assert payload["device"]["sw_version"] == "1.2.3"
     assert payload["availability_topic"] == "spooler/bridge/availability"
 
