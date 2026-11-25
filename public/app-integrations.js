@@ -378,6 +378,7 @@ function _applyFeatures(list) {
 const _FEATURE_GROUPS = [
   { title: "Monitoring",    keys: ["camera", "print_snapshot", "spaghetti_detection", "dataset_collection"] },
   { title: "Notifications", keys: ["notifications"] },
+  { title: "Integrations",  keys: ["mqtt_bridge", "webhook_buttons"] },
   { title: "Data",          keys: ["backup", "statistics", "service_log"] },
   { title: "Printing",      keys: ["job_queue", "advanced_control"] },
   { title: "Services",      keys: ["spoolman", "update_check"] },
@@ -394,12 +395,15 @@ function _renderFeaturesList() {
       const lockedNote = f.locked
         ? `<div class="feature-locked-note">${escHtml(f.lock_reason || "Locked off by server configuration")}</div>`
         : "";
+      const missingNote = (!f.locked && f.missing)
+        ? `<div class="feature-locked-note">Needs settings first (see the Integrations page)</div>`
+        : "";
       return `
         <div class="feature-row">
           <div class="feature-info">
             <span class="feature-label">${escHtml(f.name)}</span>
             <span class="feature-desc">${escHtml(f.description)}</span>
-            ${lockedNote}
+            ${lockedNote}${missingNote}
           </div>
           <label class="toggle-switch">
             <input type="checkbox" data-feature-key="${escAttr(key)}"
