@@ -290,8 +290,16 @@ def on_change(prefix: str, callback) -> None:
     starts with `prefix` changes via set() or clear() -- e.g. prefix
     "spoolman." for anything Spoolman-related. Lets a service with a
     persistent connection (a future MQTT client, say) reconnect immediately
-    instead of needing a restart."""
+    instead of needing a restart. Returns a remover, so the registrant
+    (e.g. channels.wire) can take its listener back when re-wired."""
     _on_change.append((prefix, callback))
+
+    def remove() -> None:
+        try:
+            _on_change.remove((prefix, callback))
+        except ValueError:
+            pass
+    return remove
 
 
 def describe_all() -> list:

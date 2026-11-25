@@ -26,6 +26,8 @@ async def broker(monkeypatch):
     monkeypatch.setattr(mqtt_bridge, "_published", {})
     monkeypatch.setattr(mqtt_bridge, "_discovered", {})
     monkeypatch.setattr(mqtt_bridge, "_published_yaml", {})
+    monkeypatch.setattr(mqtt_bridge, "_announced_online", False)
+    monkeypatch.setattr(mqtt_bridge, "_last_broker", None)
     monkeypatch.setattr(mqtt_bridge, "_client", None)
     yield b
     await mqtt_bridge.stop_and_clear()
@@ -264,6 +266,41 @@ async def test_canvas_arriving_later_still_gets_discovered(broker, monkeypatch):
     await asyncio.wait_for(_state_has_canvas(), 2.0)
     last = json.loads(broker.payloads("spooler/p1/state")[-1])
     assert last["canvas_active_tray"] == 2
+
+
+# ── lifecycle: the bridge must start through the REAL startup path ──────────
+# Not via tests calling ensure_started() themselves (which is why a missing
+# production wiring passed 25 tests): channels.wire() is what production runs.
+
+async def test_the_bridge_starts_through_the_real_startup_path(broker, monkeypatch):
+    import channels
+    import features
+    config_set("mqtt.url", "")                      # no broker configured yet
+    channels.wire()                                 # what server startup runs
+    _register_printer(monkeypatch)
+    await asyncio.sleep(0)                          # the startup sync task
+    assert broker.connects == []                    # nothing to connect to
+
+    config_set("mqtt.url", f"mqtt://127.0.0.1:{broker.port}")   # config change
+    conn = await broker.wait_for_connect()
+    assert conn.client_id.startswith("spooler")
+
+    # and the feature flag is a live switch, not a restart requirement:
+    # off means off (everything cleared), back on reconnects
+    features.set_enabled("mqtt_bridge", False)
+    await _wait_for_payload(broker, "spooler/bridge/availability", b"")
+    features.set_enabled("mqtt_bridge", True)
+    async def _reconnected():
+        while len(broker.connects) < 2:
+            await asyncio.sleep(0.01)
+    await asyncio.wait_for(_reconnected(), 2.0)
+
+
+async def _wait_for_payload(broker, topic, payload):
+    async def _poll():
+        while payload not in broker.payloads(topic):
+            await asyncio.sleep(0.01)
+    await asyncio.wait_for(_poll(), 2.0)
 
 
 # ── availability LWT: the bridge dying must not leave a stale "online" ───────

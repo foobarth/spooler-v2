@@ -1,5 +1,12 @@
 [
   {
+    "version": "2.4.0-beta.4",
+    "date": "2026-11-25",
+    "changes": [
+      "Fix: the Home Assistant bridge never actually started — the startup wiring that calls it was missing (it ran only in tests), so nothing appeared on the broker no matter the switch. It now starts at startup and on every switch or broker-address change, stops and clears when either turns off, and logs its connection and retries"
+    ]
+  },
+  {
     "version": "2.4.0-beta.3",
     "date": "2026-11-25",
     "changes": [

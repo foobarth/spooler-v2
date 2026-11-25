@@ -32,6 +32,7 @@ CAMERA_INTERVAL_S = 10.0    # snapshot cadence while a print is running
 _client_id = "spooler-bridge"
 
 _task: asyncio.Task = None
+_run_tasks: set = set()     # strong refs to every started run task — stop cancels all of them
 _running = False
 
 
@@ -290,16 +291,21 @@ async def _run():
                 username=username, password=password, will=will,
             ) as client:
                 _client = client
+                global _last_broker
+                _last_broker = (hostname, port, username, password)
                 try:
                     delay = 1.0
+                    n = sum(1 for p in state.printers.values())
+                    print(f"[Bridge] Connected to {hostname}:{port} — {n} printer(s) bridged")
                     await _announce(client)
                     while _running:
                         await _camera_tick(client)
                         await asyncio.sleep(CAMERA_INTERVAL_S)
                 finally:
                     _client = None
-        except aiomqtt.MqttError:
+        except aiomqtt.MqttError as e:
             if _running:
+                print(f"[Bridge] Broker connection failed ({type(e).__name__}: {e}) — retrying in {delay:.0f} s")
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 30)
 
@@ -328,21 +334,21 @@ class _Sent:
 _published: dict = {}       # printer_id -> _Sent (what the topic holds right now)
 _discovered: dict = {}      # printer_id -> discovery topics announced (what stop_and_clear must empty)
 _published_yaml: dict = {}  # printer_id -> mjpeg YAML currently retained (or absent = nothing out)
+_announced_online = False   # the availability "online" payload is on the broker, clear it on stop
+_last_broker: tuple | None = None   # (host, port, user, pass) of the last connect — clearing uses it
+                            # even after the broker address is cleared from the config
 _client = None              # the live aiomqtt client, set while connected
 
 
 async def _publish_discovery(pid: str, msgs) -> None:
-    """Publish discovery, remembering the topics so stop_and_clear can
-    empty every retained payload later ("off means off")."""
-    topics = []
+    """Publish discovery, remembering each topic as it goes out — a stop that
+    cancels the announce mid-way must still leave an accurate record for
+    stop_and_clear to empty ("off means off")."""
+    known = _discovered.setdefault(pid, [])
     for topic, payload in msgs:
-        topics.append(topic)
+        if topic not in known:
+            known.append(topic)
         await _client.publish(topic, payload, retain=True)
-    if topics:
-        known = _discovered.setdefault(pid, [])
-        for t in topics:
-            if t not in known:
-                known.append(t)
 
 
 async def _sync_discovery(pid: str, d: dict) -> bool:
@@ -390,7 +396,9 @@ async def _publish_state(pid: str, fresh: dict) -> None:
 
 async def _announce(client) -> None:
     """On connect: availability + per-printer discovery and retained state."""
+    global _announced_online
     await client.publish(BRIDGE_AVAILABILITY, "online", retain=True)
+    _announced_online = True
     for pid, pr in list(state.printers.items()):
         d = _printer_dict(pr)
         await _publish_discovery(pid, _discovery_messages(pid, d))
@@ -411,18 +419,44 @@ async def ensure_started():
         return
     _running = True
     _task = asyncio.create_task(_run())
+    _run_tasks.add(_task)
+    _task.add_done_callback(_run_tasks.discard)
+
+
+_lifecycle_epoch = 0    # bumped by stop_and_clear; superseded scheduled syncs abandon themselves
+
+
+async def sync_lifecycle() -> None:
+    """One lifecycle sync: start the bridge when the feature flag and the
+    broker URL say so, stop and clear when either turns off. Called through
+    channels' scheduler — with the epoch check, a sync superseded by a newer
+    one (or by a direct stop) becomes a no-op instead of resurrecting the
+    bridge mid-shutdown."""
+    n = _lifecycle_epoch
+    if features.is_enabled("mqtt_bridge") and config.get("mqtt.url"):
+        if n != _lifecycle_epoch:
+            return
+        await ensure_started()
+    else:
+        await stop_and_clear()
 
 
 async def stop_and_clear():
-    global _running, _task
+    global _running, _task, _lifecycle_epoch
     _running = False
-    if _task:
-        _task.cancel()
-        try:
-            await _task
-        except asyncio.CancelledError:
-            pass
-        _task = None
+    _lifecycle_epoch += 1
+    running = asyncio.get_running_loop()
+    mine = []
+    for t in list(_run_tasks):
+        if t.get_loop() is running:
+            mine.append(t)              # cancel on this loop
+        elif t.get_loop().is_closed():
+            _run_tasks.discard(t)       # a dead loop's leftover: nothing to do
+    for t in mine:
+        t.cancel()
+    if mine:
+        await asyncio.gather(*mine, return_exceptions=True)
+    _task = None
     await _clear_discovery()
 
 
@@ -431,9 +465,17 @@ async def _clear_discovery():
     and discovery — so switching the feature off makes the HA entities
     vanish instead of going stale. Best effort: if the broker is unreachable
     the records survive, and the next stop_and_clear retries the clear."""
-    if aiomqtt is None or not (_discovered or _published):
+    global _announced_online
+    if aiomqtt is None or not (_discovered or _published or _announced_online):
         return
     hostname, port, username, password = _broker_params()
+    if not hostname:
+        # The broker address is gone from the config: clear against the last
+        # broker actually connected to, or the payloads stay there forever.
+        if _last_broker is None:
+            print("[Bridge] No broker known to clear discovery on — keeping the records")
+            return
+        hostname, port, username, password = _last_broker
     try:
         async with aiomqtt.Client(
             hostname=hostname, port=port, identifier=_client_id,
@@ -454,3 +496,4 @@ async def _clear_discovery():
     _discovered.clear()
     _published.clear()
     _published_yaml.clear()
+    _announced_online = False
