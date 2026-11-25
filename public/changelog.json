@@ -1,5 +1,12 @@
 [
   {
+    "version": "2.4.0-beta.2",
+    "date": "2026-11-25",
+    "changes": [
+      "The Home Assistant bridge and realtime camera settings now appear on the Integrations page (with a 'New token' button for the camera token)"
+    ]
+  },
+  {
     "version": "2.4.0-beta.1",
     "date": "2026-11-25",
     "changes": [
