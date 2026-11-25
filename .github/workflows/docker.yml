@@ -65,7 +65,10 @@ jobs:
         id: tags
         run: |
           changelog_version="$(python3 -c "import json; print(json.load(open('public/changelog.json'))[0]['version'])")"
-          tags="$(scripts/docker-tags.sh "$GITHUB_REF" "$GITHUB_REF_NAME" "$GITHUB_SHA" "$changelog_version")"
+          # Publish to the repository's own namespace (ghcr.io/<owner>/<repo>),
+          # so a fork builds and publishes its own image without a second setup.
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          tags="$(scripts/docker-tags.sh "$GITHUB_REF" "$GITHUB_REF_NAME" "$GITHUB_SHA" "$changelog_version" "$image")"
           echo "Publishing: $tags"
           echo "tags=$tags" >> "$GITHUB_OUTPUT"
 
