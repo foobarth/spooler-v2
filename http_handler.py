@@ -3,7 +3,9 @@ HTTP request handler: static files + /api/ routes.
 """
 
 import asyncio
+import hmac
 import json
+import secrets
 import ssl
 import socket
 import subprocess
@@ -197,6 +199,28 @@ class SPHandler(ExternalRoutesMixin, ProxyMixin, AdminMixin, SimpleHTTPRequestHa
         self._json({"error": "Printer not found"}, 404)
         return False
 
+    def _camera_token_ok(self) -> bool:
+        """The external camera token (?token=...) grants GET access to the
+        camera and snapshot endpoints only — image URLs for Home Assistant,
+        where no browser session exists. An empty configured token means the
+        feature is off. Wrong tokens count toward the API-key brute-force
+        lockout; the token is the whole grant (LAN-local, revocable by
+        regenerating), so per-user printer visibility does not apply."""
+        if self.command != "GET":
+            return False
+        expected = config.get("camera.external_token")
+        if not expected:
+            return False
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        token = (q.get("token") or [""])[0]
+        if api_tokens.is_blocked(self.client_address[0]):
+            return False
+        if token and hmac.compare_digest(expected, token):
+            return True
+        if token:
+            api_tokens.record_failure(self.client_address[0])
+        return False
+
     def _session_cookie(self, token: str, clear: bool = False) -> str:
         is_secure = SECURE_COOKIES or getattr(self.server, "_is_https", False)
         if clear:
@@ -333,6 +357,20 @@ class SPHandler(ExternalRoutesMixin, ProxyMixin, AdminMixin, SimpleHTTPRequestHa
     def do_GET(self):
         if self.path.startswith("/api/external/"):
             self._handle_external("GET")
+            return
+        # Camera endpoints sit above the session gate: they carry their own
+        # guards — per-user visibility (with the session check the global gate
+        # would have done), or the external camera token for Home Assistant
+        # image URLs (see _camera_token_ok).
+        if self.path.startswith("/api/snapshot/"):
+            pid = urllib.parse.unquote(self.path[len("/api/snapshot/"):].split("?")[0])
+            if self._camera_token_ok() or (self._check_auth() and self._require_printer(pid)):
+                self._handle_snapshot()
+            return
+        if self.path.startswith("/api/camera/"):
+            pid = urllib.parse.unquote(self.path[len("/api/camera/"):].split("?")[0])
+            if self._camera_token_ok() or (self._check_auth() and self._require_printer(pid)):
+                self._proxy_camera()
             return
         # Auth-exempt routes
         if self.path == "/cert.pem":
@@ -523,12 +561,6 @@ class SPHandler(ExternalRoutesMixin, ProxyMixin, AdminMixin, SimpleHTTPRequestHa
             self._handle_stats()
         elif self.path.split("?")[0] == "/api/history.csv":
             self._handle_history_csv()
-        elif self.path.startswith("/api/snapshot/"):
-            if self._require_printer(urllib.parse.unquote(self.path[len("/api/snapshot/"):].split("?")[0])):
-                self._handle_snapshot()
-        elif self.path.startswith("/api/camera/"):
-            if self._require_printer(urllib.parse.unquote(self.path[len("/api/camera/"):].split("?")[0])):
-                self._proxy_camera()
         elif self.path.startswith("/api/thumbnail/"):
             self._proxy_thumbnail()
         elif self.path == "/api/printers":
@@ -752,6 +784,11 @@ class SPHandler(ExternalRoutesMixin, ProxyMixin, AdminMixin, SimpleHTTPRequestHa
         elif self.path == "/api/api-tokens":
             if self._require("apitokens.manage"):
                 self._handle_create_api_token()
+        elif self.path == "/api/camera-token":
+            if self._require("apitokens.manage"):
+                token = secrets.token_urlsafe(32)
+                config.set("camera.external_token", token)
+                self._json({"token": token})
         elif self.path.startswith("/api/spoolman-ledger/") and self.path.endswith("/retry"):
             if self._require("filament.manage"):
                 self._handle_ledger_action("retry")
