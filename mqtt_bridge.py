@@ -124,7 +124,11 @@ async def _publish_camera_yaml(pid: str, d: dict) -> None:
 
 
 def _discovery_topic(component: str, pid: str, key: str) -> str:
-    return f"homeassistant/{component}/spooler/{pid}/{key}/config"
+    # HA's discovery grammar is homeassistant/<component>/[<node_id>/]<object_id>/config
+    # — node_id = the printer, object_id = the entity. One level more (an extra
+    # namespace) and HA silently ignores the payload; that cost us the whole
+    # device until the probe experiment exposed it.
+    return f"homeassistant/{component}/{pid}/{key}/config"
 
 
 def _template(key: str, nullable: bool) -> str:

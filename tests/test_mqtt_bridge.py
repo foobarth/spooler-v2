@@ -58,6 +58,20 @@ PROJECTION_KEYS = {"state", "connected", "printing", "nozzle_temp", "nozzle_targ
 
 # ── discovery on connect ─────────────────────────────────────────────────────
 
+def test_discovery_topics_match_has_grammar():
+    """HA silently ignores configs published outside its discovery-topic
+    grammar (homeassistant/<component>/[<node_id>/]<object_id>/config —
+    5 or 6 segments total). This was a real bug: an extra namespace level
+    made every real config invalid while the tests asserted our own strings."""
+    import mqtt_bridge as mb
+    for component in ("sensor", "binary_sensor", "camera"):
+        topic = mb._discovery_topic(component, "7ff68cf82d3140e49dac6c423c0eb2b5", "nozzle_temp")
+        parts = topic.split("/")
+        assert parts[0] == "homeassistant" and parts[1] == component
+        assert parts[2] == "7ff68cf82d3140e49dac6c423c0eb2b5"   # node_id = the printer
+        assert parts[3] == "nozzle_temp" and parts[4] == "config"
+        assert len(parts) == 5, f"{topic}: HA accepts 5 segments, got {len(parts)}"
+
 def _register_printer(monkeypatch, **status):
     import state
     from printers.base import PrinterConnection
@@ -72,7 +86,7 @@ async def test_connect_publishes_retained_discovery_with_device_info(broker, mon
     _register_printer(monkeypatch, TempOfNozzle=210, TempTargetNozzle=215, TempOfHotbed=60)
     await mqtt_bridge.ensure_started()
 
-    cfg = await broker.wait_for_publish("homeassistant/sensor/spooler/p1/nozzle_temp/config")
+    cfg = await broker.wait_for_publish("homeassistant/sensor/p1/nozzle_temp/config")
     assert cfg.retain
     payload = json.loads(cfg.payload)
     assert payload["name"] == "Nozzle temperature"
@@ -96,9 +110,9 @@ async def test_connect_announces_the_sensor_set_per_printer(broker, monkeypatch)
     for key in ("state", "nozzle_temp", "nozzle_target", "bed_temp", "bed_target",
                 "chamber_temp", "progress", "layer", "total_layer", "time_remaining",
                 "filament_mm", "filament_g", "speed_factor", "firmware_version"):
-        assert f"homeassistant/sensor/spooler/p1/{key}/config" in topics, key
+        assert f"homeassistant/sensor/p1/{key}/config" in topics, key
     for key in ("connected", "printing"):
-        assert f"homeassistant/binary_sensor/spooler/p1/{key}/config" in topics, key
+        assert f"homeassistant/binary_sensor/p1/{key}/config" in topics, key
 
 
 async def test_state_topic_publishes_the_canonical_projection(broker, monkeypatch):
@@ -224,7 +238,7 @@ async def test_connect_discovers_canvas_entities(broker, monkeypatch):
     _register_printer(monkeypatch, canvas_info=CANVAS_INFO)
     await mqtt_bridge.ensure_started()
 
-    cfg = await broker.wait_for_publish("homeassistant/sensor/spooler/p1/canvas_tray2_status/config")
+    cfg = await broker.wait_for_publish("homeassistant/sensor/p1/canvas_tray2_status/config")
     assert cfg.retain
     payload = json.loads(cfg.payload)
     assert payload["name"] == "Tray 3 status"      # tray_id + 1, like the browser
@@ -236,7 +250,7 @@ async def test_connect_discovers_canvas_entities(broker, monkeypatch):
                 "canvas_tray0_brand", "canvas_tray0_color",
                 "canvas_tray2_status", "canvas_tray2_material",
                 "canvas_tray3_status", "canvas_tray3_color"):
-        assert f"homeassistant/sensor/spooler/p1/{key}/config" in topics, key
+        assert f"homeassistant/sensor/p1/{key}/config" in topics, key
 
 
 async def test_no_canvas_no_canvas_discovery(broker, monkeypatch):
@@ -255,7 +269,7 @@ async def test_canvas_arriving_later_still_gets_discovered(broker, monkeypatch):
     pr.status["canvas_info"] = CANVAS_INFO          # the 30 s poll lands
     state.publish("status_update", printer_id="p1", printer=pr.to_dict())
 
-    cfg = await broker.wait_for_publish("homeassistant/sensor/spooler/p1/canvas_tray2_status/config")
+    cfg = await broker.wait_for_publish("homeassistant/sensor/p1/canvas_tray2_status/config")
     payload = json.loads(cfg.payload)
     assert payload["name"] == "Tray 3 status"
     # and the fresh state (with the canvas keys) is published right away, not
@@ -377,7 +391,7 @@ async def test_connect_discovers_the_camera_when_the_printer_has_one(broker, mon
     pr.camera_url = "http://192.0.2.5:8080/mjpeg"
     await mqtt_bridge.ensure_started()
 
-    cfg = await broker.wait_for_publish("homeassistant/camera/spooler/p1/camera/config")
+    cfg = await broker.wait_for_publish("homeassistant/camera/p1/camera/config")
     assert cfg.retain
     payload = json.loads(cfg.payload)
     assert payload["topic"] == "spooler/p1/camera/frame"

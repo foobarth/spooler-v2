@@ -1,5 +1,12 @@
 [
   {
+    "version": "2.4.0-beta.6",
+    "date": "2026-11-25",
+    "changes": [
+      "Fix: the bridge's discovery payloads were published one topic level too deep, outside Home Assistant's discovery grammar — HA silently ignored every config, so no device ever appeared. The probe experiment exposed it; the topics now match the grammar exactly"
+    ]
+  },
+  {
     "version": "2.4.0-beta.5",
     "date": "2026-11-25",
     "changes": [
