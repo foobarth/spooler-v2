@@ -27,6 +27,7 @@ async def broker(monkeypatch):
     monkeypatch.setattr(mqtt_bridge, "_discovered", {})
     monkeypatch.setattr(mqtt_bridge, "_camera_last_sent", {})
     monkeypatch.setattr(mqtt_bridge, "_camera_gate_logged", {})
+    monkeypatch.setattr(mqtt_bridge, "_camera_frame_out", set())
     monkeypatch.setattr(mqtt_bridge, "_announced_online", False)
     monkeypatch.setattr(mqtt_bridge, "_ledger_broker", None)
     monkeypatch.setattr(mqtt_bridge, "_client", None)
@@ -563,7 +564,44 @@ async def test_camera_frames_flow_while_printing(broker, monkeypatch):
 
     frame = await broker.wait_for_publish("spooler/p1/camera/frame")
     assert frame.payload == b"jpeg-http://192.0.2.5:8080/mjpeg"
-    assert not frame.retain             # a stale frame must not outlive the stream
+    assert frame.retain            # any subscriber join (feature toggle, HA restart) gets the frame
+
+
+async def test_offline_printer_clears_its_camera_frame(broker, monkeypatch):
+    # A retained frame's lifetime is exactly the stream's: when the printer
+    # drops, the frame topic is emptied — HA's tile goes dark like the card,
+    # never showing a zombie view.
+    import mqtt_bridge as mb
+    monkeypatch.setattr(mb, "CAMERA_INTERVAL_S", 0.05)
+    monkeypatch.setattr(mb, "grab_jpeg", lambda url, timeout=5.0: b"jpeg")
+    pr = _register_printer(monkeypatch)
+    pr.connected = True
+    pr.camera_url = "http://192.0.2.5:8080/mjpeg"
+    await mqtt_bridge.sync_lifecycle()
+    await broker.wait_for_publish("spooler/p1/camera/frame")
+
+    pr.connected = False
+    state.publish("status_update", printer_id="p1", printer=pr.to_dict())
+    await _wait_for_payload(broker, "spooler/p1/camera/frame", b"")
+
+
+async def test_off_clear_empties_the_camera_frame_topic(broker, monkeypatch):
+    import mqtt_bridge as mb
+    import features
+    monkeypatch.setattr(mb, "CAMERA_INTERVAL_S", 0.05)
+    monkeypatch.setattr(mb, "grab_jpeg", lambda url, timeout=5.0: b"jpeg")
+    pr = _register_printer(monkeypatch)
+    pr.connected = True
+    pr.camera_url = "http://192.0.2.5:8080/mjpeg"
+    await mqtt_bridge.sync_lifecycle()
+    await broker.wait_for_publish("spooler/p1/camera/frame")
+
+    features.set_enabled("mqtt_bridge", False)
+    try:
+        await mqtt_bridge.sync_lifecycle()
+        await _wait_for_payload(broker, "spooler/p1/camera/frame", b"")
+    finally:
+        features.set_enabled("mqtt_bridge", True)
 
 
 async def test_camera_feeds_slowly_while_idle(broker, monkeypatch):

@@ -252,6 +252,11 @@ async def _camera_tick(client, wanted) -> None:
             print(f"[Bridge camera] {pid}: feeder gate connected={gate[0]} "
                   f"camera_url={gate[1]} state={d.get('state')}")
         if not gate[0] or not gate[1]:
+            # The stream is over: the retained frame must not outlive it.
+            if pid in _camera_frame_out:
+                await client.publish(_camera_topic(pid), b"", retain=True)
+                _camera_frame_out.discard(pid)
+                print(f"[Bridge camera] {pid}: frame cleared (stream over)")
             _camera_last_sent.pop(pid, None)
             continue
         printing = d.get("state") in ("printing", "paused")
@@ -264,7 +269,8 @@ async def _camera_tick(client, wanted) -> None:
         print(f"[Bridge camera] {pid}: grab ({'printing' if printing else 'idle'} cadence)")
         jpeg = await loop.run_in_executor(None, grab_jpeg, d["camera_url"])
         if jpeg:
-            await client.publish(_camera_topic(pid), jpeg)
+            await client.publish(_camera_topic(pid), jpeg, retain=True)
+            _camera_frame_out.add(pid)
             print(f"[Bridge camera] {pid}: published {len(jpeg)} B")
         else:
             print(f"[Bridge camera] {pid}: grab returned nothing")
@@ -298,7 +304,7 @@ _ledger_broker: tuple | None = None
 
 
 def _ledger_outstanding() -> bool:
-    return bool(_discovered or _published or _announced_online)
+    return bool(_discovered or _published or _camera_frame_out or _announced_online)
 
 
 def _desired_params():
@@ -469,6 +475,7 @@ class _Sent:
 _published: dict = {}       # printer_id -> _Sent (what the topic holds right now)
 _camera_last_sent: dict = {}  # printer_id -> monotonic ts of the last snapshot round (idle cadence gate)
 _camera_gate_logged: dict = {}  # printer_id -> last logged (connected, camera_url) gate state
+_camera_frame_out: set = {}   # printer_ids with a retained frame on the broker — the off-clear must empty these
 _discovered: dict = {}      # printer_id -> discovery topics announced (what the off-clear must empty)
 _announced_online = False   # the availability "online" payload is on the broker, clear it on stop
 _client = None              # the live aiomqtt client, set while connected
@@ -541,7 +548,8 @@ async def _push_frame_now(pid: str, d: dict) -> None:
     jpeg = await asyncio.get_running_loop().run_in_executor(
         None, grab_jpeg, d["camera_url"])
     if jpeg and _client is not None:
-        await _client.publish(_camera_topic(pid), jpeg)
+        await _client.publish(_camera_topic(pid), jpeg, retain=True)
+        _camera_frame_out.add(pid)
         print(f"[Bridge camera] {pid}: published {len(jpeg)} B (state event)")
     _camera_last_sent[pid] = time.monotonic()   # the cadence restarts from this frame
 
@@ -590,6 +598,8 @@ async def _clear_records():
                 for topic in _discovered.get(pid, []):
                     await client.publish(topic, b"", retain=True)
                 await client.publish(_state_topic(pid), b"", retain=True)
+            for pid in set(_camera_frame_out):
+                await client.publish(_camera_topic(pid), b"", retain=True)
             # QoS-0 publishes are handed to aiomqtt's loop task; leaving the
             # context immediately would drop whatever it hasn't written yet.
             await asyncio.sleep(0.25)
@@ -600,6 +610,7 @@ async def _clear_records():
     _discovered.clear()
     _camera_last_sent.clear()
     _camera_gate_logged.clear()
+    _camera_frame_out.clear()
     _published.clear()
     _announced_online = False
     _ledger_broker = None
