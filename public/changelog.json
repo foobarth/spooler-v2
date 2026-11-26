@@ -1,5 +1,12 @@
 [
   {
+    "version": "2.4.0-beta.10",
+    "date": "2026-11-26",
+    "changes": [
+      "The Home Assistant camera is the MQTT snapshot camera only — the external token, the Spooler-address setting and the paste-ready YAML are gone; the smooth live stream stays in Spooler's own UI. The HA setup is now one short 'Home Assistant' section on the Integrations page"
+    ]
+  },
+  {
     "version": "2.3.9",
     "date": "2026-11-26",
     "changes": [
