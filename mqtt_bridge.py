@@ -30,6 +30,9 @@ import state
 from snapshot import grab_jpeg
 
 NUMERIC_THROTTLE_S = 5.0    # numerics republish at most this often
+PUBLISH_TIMEOUT_S = 10.0    # every publish is bounded: a silently-dead socket (no
+                            # RST — writes never complete, nothing raises) must
+                            # surface as an error, not hang the publisher forever
 CAMERA_INTERVAL_S = 10.0    # snapshot cadence while a print is running
 IDLE_CAMERA_INTERVAL_S = 60.0   # snapshot cadence while connected but idle
 
@@ -254,7 +257,7 @@ async def _camera_tick(client, wanted) -> None:
         if not gate[0] or not gate[1]:
             # The stream is over: the retained frame must not outlive it.
             if pid in _camera_frame_out:
-                await client.publish(_camera_topic(pid), b"", retain=True)
+                await client.publish(_camera_topic(pid), b"", retain=True, timeout=PUBLISH_TIMEOUT_S)
                 _camera_frame_out.discard(pid)
                 print(f"[Bridge camera] {pid}: frame cleared (stream over)")
             _camera_last_sent.pop(pid, None)
@@ -266,12 +269,10 @@ async def _camera_tick(client, wanted) -> None:
         # A failed grab consumes the slot too: a cold or broken camera is
         # retried at the cadence, not hammered every tick.
         _camera_last_sent[pid] = now
-        print(f"[Bridge camera] {pid}: grab ({'printing' if printing else 'idle'} cadence)")
         jpeg = await loop.run_in_executor(None, grab_jpeg, d["camera_url"])
         if jpeg:
-            await client.publish(_camera_topic(pid), jpeg, retain=True)
+            await client.publish(_camera_topic(pid), jpeg, retain=True, timeout=PUBLISH_TIMEOUT_S)
             _camera_frame_out.add(pid)
-            print(f"[Bridge camera] {pid}: published {len(jpeg)} B")
         else:
             print(f"[Bridge camera] {pid}: grab returned nothing")
 
@@ -445,7 +446,7 @@ async def _hold(wanted) -> None:
                 while _desired_params() == wanted:
                     await _camera_tick(client, wanted)
                     await _sleep_or_wake(CAMERA_INTERVAL_S)
-        except aiomqtt.MqttError as e:
+        except (aiomqtt.MqttError, TimeoutError) as e:
             if _desired_params() != wanted:
                 break
             print(f"[Bridge] Broker connection failed ({type(e).__name__}: {e}) — retrying in {delay:.0f} s")
@@ -489,7 +490,7 @@ async def _publish_discovery(pid: str, msgs) -> None:
     for topic, payload in msgs:
         if topic not in known:
             known.append(topic)
-        await _client.publish(topic, payload, retain=True)
+        await _client.publish(topic, payload, retain=True, timeout=PUBLISH_TIMEOUT_S)
 
 
 async def _sync_discovery(pid: str, d: dict) -> bool:
@@ -517,19 +518,24 @@ async def on_status(payload: dict) -> None:
     # trays from the 30 s poll, a camera that appeared): announce what is
     # missing and publish the state right away — the new entities should
     # not sit behind the numeric throttle reading "unknown".
-    if await _sync_discovery(pid, d):
-        await _publish_state(pid, fresh)
-        if immediate:
-            _schedule_frame_now(pid, d)     # the event frame rides every path
-        return
-    if sent.json is None:
-        await _publish_state(pid, fresh)        # first sight after (re)connect
-        return
-    if changed and (immediate
-                    or time.monotonic() - sent.ts >= NUMERIC_THROTTLE_S):
-        await _publish_state(pid, fresh)
-        if immediate:
-            _schedule_frame_now(pid, d)
+    try:
+        if await _sync_discovery(pid, d):
+            await _publish_state(pid, fresh)
+            if immediate:
+                _schedule_frame_now(pid, d)     # the event frame rides every path
+            return
+        if sent.json is None:
+            await _publish_state(pid, fresh)        # first sight after (re)connect
+            return
+        if changed and (immediate
+                        or time.monotonic() - sent.ts >= NUMERIC_THROTTLE_S):
+            await _publish_state(pid, fresh)
+            if immediate:
+                _schedule_frame_now(pid, d)
+    except (aiomqtt.MqttError, TimeoutError) as e:
+        # a dead socket times out here instead of hanging forever; the owner's
+        # own publish timeout cycles the connection, the next event retries
+        print(f"[Bridge] Publish failed ({type(e).__name__}: {e}) — dropping this update")
 
 
 _frame_tasks: set = set()   # strong refs: a GC'd task is a silently dropped frame
@@ -549,14 +555,21 @@ async def _push_frame_now(pid: str, d: dict) -> None:
     jpeg = await asyncio.get_running_loop().run_in_executor(
         None, grab_jpeg, d["camera_url"])
     if jpeg and _client is not None:
-        await _client.publish(_camera_topic(pid), jpeg, retain=True)
-        _camera_frame_out.add(pid)
-        print(f"[Bridge camera] {pid}: published {len(jpeg)} B (state event)")
+        try:
+            await _client.publish(_camera_topic(pid), jpeg, retain=True,
+                                  timeout=PUBLISH_TIMEOUT_S)
+            _camera_frame_out.add(pid)
+            print(f"[Bridge camera] {pid}: published {len(jpeg)} B (state event)")
+        except (aiomqtt.MqttError, TimeoutError) as e:
+            # runs as a bus task: a dead socket must not kill it — the owner's
+            # own publish timeout cycles the connection, the next event retries
+            print(f"[Bridge camera] {pid}: state-event frame failed ({type(e).__name__}: {e})")
     _camera_last_sent[pid] = time.monotonic()   # the cadence restarts from this frame
 
 
 async def _publish_state(pid: str, fresh: dict) -> None:
-    await _client.publish(_state_topic(pid), json.dumps(fresh), retain=True)
+    await _client.publish(_state_topic(pid), json.dumps(fresh), retain=True,
+                          timeout=PUBLISH_TIMEOUT_S)
     sent = _published.setdefault(pid, _Sent())
     sent.json = fresh
     sent.ts = time.monotonic()
@@ -565,7 +578,7 @@ async def _publish_state(pid: str, fresh: dict) -> None:
 async def _announce(client) -> None:
     """On connect: availability + per-printer discovery and retained state."""
     global _announced_online
-    await client.publish(BRIDGE_AVAILABILITY, "online", retain=True)
+    await client.publish(BRIDGE_AVAILABILITY, "online", retain=True, timeout=PUBLISH_TIMEOUT_S)
     _announced_online = True
     for pid, pr in list(state.printers.items()):
         d = _printer_dict(pr)
@@ -594,13 +607,13 @@ async def _clear_records():
             hostname=broker[0], port=broker[1], identifier=_client_id,
             username=broker[2], password=broker[3],
         ) as client:
-            await client.publish(BRIDGE_AVAILABILITY, b"", retain=True)
+            await client.publish(BRIDGE_AVAILABILITY, b"", retain=True, timeout=PUBLISH_TIMEOUT_S)
             for pid in set(_discovered) | set(_published):
                 for topic in _discovered.get(pid, []):
-                    await client.publish(topic, b"", retain=True)
-                await client.publish(_state_topic(pid), b"", retain=True)
+                    await client.publish(topic, b"", retain=True, timeout=PUBLISH_TIMEOUT_S)
+                await client.publish(_state_topic(pid), b"", retain=True, timeout=PUBLISH_TIMEOUT_S)
             for pid in set(_camera_frame_out):
-                await client.publish(_camera_topic(pid), b"", retain=True)
+                await client.publish(_camera_topic(pid), b"", retain=True, timeout=PUBLISH_TIMEOUT_S)
             # QoS-0 publishes are handed to aiomqtt's loop task; leaving the
             # context immediately would drop whatever it hasn't written yet.
             await asyncio.sleep(0.25)

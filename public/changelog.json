@@ -1,5 +1,12 @@
 [
   {
+    "version": "2.4.0-beta.18",
+    "date": "2026-11-26",
+    "changes": [
+      "Found via a live print: a silently-dead broker connection froze the whole bridge (status, camera, events) with no error — every MQTT publish now carries a bounded timeout, so a dead socket cycles the connection and the flow resumes within ~20 s. Also: the camera feeder logs only the exceptional (gate changes, failures, events), and a state event now pushes its camera frame on every publish path"
+    ]
+  },
+  {
     "version": "2.4.0-beta.17",
     "date": "2026-11-26",
     "changes": [

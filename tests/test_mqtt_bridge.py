@@ -664,3 +664,43 @@ async def test_camera_feeds_nothing_while_offline(broker, monkeypatch):
     await asyncio.sleep(0.15)
     assert not grabs, "an offline printer gets no frames"
 
+
+
+async def test_a_dead_socket_self_heals(broker, monkeypatch):
+    # A silently-dead broker connection (no RST — writes never complete, no
+    # error surfaces) must not hang the bridge forever: bounded publish
+    # timeouts kick the owner into its reconnect cycle, and after the
+    # reconnect the flow resumes on the fresh connection.
+    import mqtt_bridge as mb
+    monkeypatch.setattr(mb, "CAMERA_INTERVAL_S", 0.05)
+    monkeypatch.setattr(mb, "IDLE_CAMERA_INTERVAL_S", 0.05)
+    monkeypatch.setattr(mb, "PUBLISH_TIMEOUT_S", 0.3, raising=False)
+    monkeypatch.setattr(mb, "grab_jpeg", lambda url, timeout=5.0: b"jpeg")
+    pr = _register_printer(monkeypatch)
+    pr.connected = True
+    pr.camera_url = "http://192.0.2.5:8080/mjpeg"
+    await mqtt_bridge.sync_lifecycle()
+    await asyncio.wait_for(_first_camera_frame(broker), 10.0)
+    n = len(broker.payloads("spooler/p1/camera/frame"))
+
+    dead_client = mb._client
+    import paho.mqtt.client as paho_mqtt
+    real_paho_publish = paho_mqtt.Client.publish
+
+    import itertools
+    stuck_mids = itertools.count(99)
+
+    class StuckInfo:                    # the packet is queued, never flushed
+        rc = 0
+        def __init__(self):
+            self.mid = next(stuck_mids)
+        def is_published(self):
+            return False
+
+    def hang_paho_publish(self, *a, **kw):
+        if self is dead_client._client:  # the dead socket: below aiomqtt's timeout layer
+            return StuckInfo()
+        return real_paho_publish(self, *a, **kw)
+
+    monkeypatch.setattr(paho_mqtt.Client, "publish", hang_paho_publish)
+    await _wait_for_publish_after(broker, "spooler/p1/camera/frame", n, timeout=15.0)
