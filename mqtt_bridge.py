@@ -5,10 +5,13 @@ discovery. The bridge never opens a second connection to any printer: it
 fans out from the status cache (state.printers), which the existing printer
 connections already populate.
 
-Lifecycle: ensure_started() is idempotent and decides from the feature flag
-and the broker URL; stop_and_clear() disconnects and empties every retained
-discovery payload ("off means off" — entities vanish, not go stale). Both
-are called from server startup and via on_change hooks, never at import.
+Lifecycle (v2, single owner): one task owns the connection and every
+lifecycle decision. Callers never start or stop anything — `sync_lifecycle()`
+just pokes the owner, which re-evaluates desired state (feature on AND broker
+URL set → that broker) and reconciles: connect, move (clear old, announce
+new), or tear down and empty every retained payload ("off means off" —
+entities vanish, not go stale). A poke from any context wakes it; interior
+naps end early on a wake but never consume it.
 """
 
 import asyncio
@@ -30,10 +33,6 @@ NUMERIC_THROTTLE_S = 5.0    # numerics republish at most this often
 CAMERA_INTERVAL_S = 10.0    # snapshot cadence while a print is running
 
 _client_id = "spooler-bridge"
-
-_task: asyncio.Task = None
-_run_tasks: set = set()     # strong refs to every started run task — stop cancels all of them
-_running = False
 
 
 # ── discovery registry ───────────────────────────────────────────────────────
@@ -270,13 +269,16 @@ def _broker_params():
     )
 
 
-async def _camera_tick(client) -> None:
+async def _camera_tick(client, wanted) -> None:
     """One snapshot round for every printing/paused printer with a camera,
     roughly every CAMERA_INTERVAL_S (ADR: ~10 s while printing, nothing
     when idle/offline). Frames are not retained — a stale frame must not
-    outlive the stream."""
+    outlive the stream. A lifecycle change ends the round at printer
+    granularity; the in-flight grab (executor, ~5 s) is uncancellable."""
     loop = asyncio.get_running_loop()
     for pid, pr in list(state.printers.items()):
+        if _desired_params() != wanted:
+            return
         d = _printer_dict(pr)
         if d.get("state") not in ("printing", "paused") or not d.get("camera_url"):
             continue
@@ -285,40 +287,184 @@ async def _camera_tick(client) -> None:
             await client.publish(_camera_topic(pid), jpeg)
 
 
-async def _run():
-    global _running, _client
-    hostname, port, username, password = _broker_params()
-    delay = 1.0
-    while _running:
-        try:
-            will = aiomqtt.Will(topic=BRIDGE_AVAILABILITY, payload=b"offline", retain=True)
-            async with aiomqtt.Client(
-                hostname=hostname, port=port, identifier=_client_id,
-                username=username, password=password, will=will,
-            ) as client:
-                _client = client
-                global _last_broker
-                _last_broker = (hostname, port, username, password)
-                try:
-                    delay = 1.0
-                    n = sum(1 for p in state.printers.values())
-                    print(f"[Bridge] Connected to {hostname}:{port} — {n} printer(s) bridged")
-                    await _announce(client)
-                    while _running:
-                        await _camera_tick(client)
-                        await asyncio.sleep(CAMERA_INTERVAL_S)
-                finally:
-                    _client = None
-        except aiomqtt.MqttError as e:
-            if _running:
-                print(f"[Bridge] Broker connection failed ({type(e).__name__}: {e}) — retrying in {delay:.0f} s")
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, 30)
-
-
 def _printer_dict(pr):
     """Fan-out works on to_dict() — the exact shape browsers see."""
     return pr.to_dict() if hasattr(pr, "to_dict") else pr
+
+
+# ── lifecycle: one serialized owner ──────────────────────────────────────────
+# Exactly one task connects, reconnects, announces, ticks the camera, tears
+# down or clears. Requests from outside are pokes, not commands: `Event.set`
+# (thread-safe via call_soon_threadsafe from foreign contexts), and the owner
+# re-reads committed config when it acts. A wake is consumed by the owner —
+# at the top of its loop, or by a nap that ends early — and every consume is
+# immediately followed by a fresh desired-state read, so a consumed poke is
+# always acted on and none are lost.
+
+_owner_task: asyncio.Task | None = None
+_owner_loop: asyncio.AbstractEventLoop | None = None
+_wake: asyncio.Event | None = None
+
+_CLEAR_RETRY_S = 60.0        # parked: keep retrying a failed off-clear this often
+ACK_TIMEOUT_S = 10.0        # how long turning OFF waits to report "done"
+
+# broker the outstanding retained payloads were published to — the clear
+# targets THIS, never whatever the config says now (the URL may have been
+# changed or cleared in the same breath). Set at every connect.
+_ledger_broker: tuple | None = None
+
+
+def _ledger_outstanding() -> bool:
+    return bool(_discovered or _published or _published_yaml or _announced_online)
+
+
+def _desired_params():
+    """The broker to hold while the bridge should run — feature on AND broker
+    URL set — or None when it should not. aiomqtt absent: never runs."""
+    if aiomqtt is None:
+        return None
+    if not features.is_enabled("mqtt_bridge") or not config.get("mqtt.url"):
+        return None
+    return _broker_params()
+
+
+def _ensure_owner() -> None:
+    """(Re-)spawn the ONE owner task on the current loop when absent, done or
+    stranded on a closed loop. A live owner is kept: re-wiring channels must
+    not restart the connection."""
+    global _owner_task, _owner_loop, _wake
+    running = asyncio.get_running_loop()
+    if _owner_task is not None and not _owner_task.done() and _owner_loop is running:
+        return
+    _wake = asyncio.Event()
+    _owner_loop = running
+    _owner_task = asyncio.create_task(_owner())
+
+
+def _poke() -> None:
+    """Wake the owner so it re-evaluates desired state. Never a command: the
+    owner reads the live config when it acts. A poke that arrives while a
+    dead owner is being replaced is inherently honored — the replacement's
+    first cycle reconciles exactly then."""
+    _ensure_owner()
+    loop, wake = _owner_loop, _wake
+    if loop is not None and not loop.is_closed():
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            wake.set()
+        else:
+            loop.call_soon_threadsafe(wake.set)
+
+
+async def sync_lifecycle() -> None:
+    """The one lifecycle entry point — what channels' hooks call (via their
+    scheduler) and what tests await: tell the owner to re-evaluate desired
+    state. Idempotent, any context. Turning OFF is acked by the real
+    condition: this returns once the retained-payload ledger is empty (every
+    published topic was emptied on the broker), or reports loudly that the
+    clear is still being retried in the background. Turning ON returns
+    immediately — the connection appearing on the broker is the progress
+    signal."""
+    if aiomqtt is None:
+        return
+    _poke()
+    if _desired_params() is not None:
+        return
+    deadline = time.monotonic() + ACK_TIMEOUT_S
+    while _ledger_outstanding():
+        if time.monotonic() > deadline:
+            print("[Bridge] lifecycle: off-clear still in progress "
+                  "(broker slow or down?) — the owner keeps retrying in the background")
+            return
+        await asyncio.sleep(0.02)
+
+
+async def _owner():
+    """Single serialized actor: the only task that touches the connection or
+    the lifecycle state. Runs until cancelled; its own errors are contained."""
+    while True:
+        _wake.clear()
+        # A poke counted before this clear has set the event (or queues its
+        # set after it — a spurious wake at worst): the fresh desired-state
+        # reads below act on it either way. Lost wakes are impossible.
+        try:
+            await _reconcile()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[Bridge] lifecycle error ({type(e).__name__}: {e}) — retrying")
+        if _desired_params() is None and _ledger_outstanding():
+            # parked with retained payloads outstanding (the clear failed —
+            # broker down?): keep finishing "off" instead of leaving stale
+            # entities forever. A poke ends the nap early.
+            await _sleep_or_wake(_CLEAR_RETRY_S)
+        else:
+            await _wake.wait()
+
+
+async def _sleep_or_wake(timeout: float) -> None:
+    """Sleep that ends early when the owner is woken — consuming the wake it
+    observed. Every nap is immediately followed by a fresh desired-state
+    read, so a consumed poke is always acted on; leaving the event set here
+    instead would make the nap return instantly forever (an await-free hot
+    loop that starves the whole event loop)."""
+    try:
+        await asyncio.wait_for(_wake.wait(), timeout)
+    except TimeoutError:
+        return
+    _wake.clear()
+
+
+async def _reconcile() -> None:
+    """Bring reality to desire — the only place that connects or clears.
+    Returns when reality matches desire, so a spurious wake costs one pass."""
+    while True:
+        wanted = _desired_params()
+        if wanted is None:
+            if _ledger_outstanding():
+                await _clear_records()      # off means off (retried on failure)
+            return
+        if _ledger_outstanding() and _ledger_broker != wanted:
+            await _clear_records()          # broker moved: empty the OLD one first
+        await _hold(wanted)                 # returns when desire changed or the connection died
+
+
+async def _hold(wanted) -> None:
+    """Connect and serve while desire still says `wanted`; return when desire
+    changed or the connection ended. Reconnects with backoff while the broker
+    is down; the backoff and camera naps end early on a wake."""
+    global _client, _ledger_broker
+    delay = 1.0
+    while _desired_params() == wanted:
+        try:
+            will = aiomqtt.Will(topic=BRIDGE_AVAILABILITY, payload=b"offline", retain=True)
+            async with aiomqtt.Client(
+                hostname=wanted[0], port=wanted[1], identifier=_client_id,
+                username=wanted[2], password=wanted[3], will=will,
+            ) as client:
+                _client = client
+                _ledger_broker = wanted
+                delay = 1.0
+                n = sum(1 for p in state.printers.values())
+                print(f"[Bridge] Connected to {wanted[0]}:{wanted[1]} — {n} printer(s) bridged")
+                if _desired_params() != wanted:
+                    break
+                await _announce(client)
+                while _desired_params() == wanted:
+                    await _camera_tick(client, wanted)
+                    await _sleep_or_wake(CAMERA_INTERVAL_S)
+        except aiomqtt.MqttError as e:
+            if _desired_params() != wanted:
+                break
+            print(f"[Bridge] Broker connection failed ({type(e).__name__}: {e}) — retrying in {delay:.0f} s")
+            await _sleep_or_wake(delay)
+            delay = min(delay * 2, 30)
+        finally:
+            _client = None
+    # falling out of the async with on a desire change = clean DISCONNECT, no LWT
 
 
 # ── status_update subscriber ─────────────────────────────────────────────────
@@ -338,11 +484,9 @@ class _Sent:
 
 
 _published: dict = {}       # printer_id -> _Sent (what the topic holds right now)
-_discovered: dict = {}      # printer_id -> discovery topics announced (what stop_and_clear must empty)
+_discovered: dict = {}      # printer_id -> discovery topics announced (what the off-clear must empty)
 _published_yaml: dict = {}  # printer_id -> mjpeg YAML currently retained (or absent = nothing out)
 _announced_online = False   # the availability "online" payload is on the broker, clear it on stop
-_last_broker: tuple | None = None   # (host, port, user, pass) of the last connect — clearing uses it
-                            # even after the broker address is cleared from the config
 _client = None              # the live aiomqtt client, set while connected
 
 
@@ -415,77 +559,23 @@ async def _announce(client) -> None:
         sent.json, sent.ts = fresh, time.monotonic()
 
 
-async def ensure_started():
-    global _task, _running
-    if aiomqtt is None:
-        return
-    if not features.is_enabled("mqtt_bridge") or not config.get("mqtt.url"):
-        return
-    if _task and not _task.done():
-        return
-    _running = True
-    _task = asyncio.create_task(_run())
-    _run_tasks.add(_task)
-    _task.add_done_callback(_run_tasks.discard)
-
-
-_lifecycle_epoch = 0    # bumped by stop_and_clear; superseded scheduled syncs abandon themselves
-
-
-async def sync_lifecycle() -> None:
-    """One lifecycle sync: start the bridge when the feature flag and the
-    broker URL say so, stop and clear when either turns off. Called through
-    channels' scheduler — with the epoch check, a sync superseded by a newer
-    one (or by a direct stop) becomes a no-op instead of resurrecting the
-    bridge mid-shutdown."""
-    n = _lifecycle_epoch
-    if features.is_enabled("mqtt_bridge") and config.get("mqtt.url"):
-        if n != _lifecycle_epoch:
-            return
-        await ensure_started()
-    else:
-        await stop_and_clear()
-
-
-async def stop_and_clear():
-    global _running, _task, _lifecycle_epoch
-    _running = False
-    _lifecycle_epoch += 1
-    running = asyncio.get_running_loop()
-    mine = []
-    for t in list(_run_tasks):
-        if t.get_loop() is running:
-            mine.append(t)              # cancel on this loop
-        elif t.get_loop().is_closed():
-            _run_tasks.discard(t)       # a dead loop's leftover: nothing to do
-    for t in mine:
-        t.cancel()
-    if mine:
-        await asyncio.gather(*mine, return_exceptions=True)
-    _task = None
-    await _clear_discovery()
-
-
-async def _clear_discovery():
+async def _clear_records():
     """Empty every retained payload we ever published — availability, state
-    and discovery — so switching the feature off makes the HA entities
-    vanish instead of going stale. Best effort: if the broker is unreachable
-    the records survive, and the next stop_and_clear retries the clear."""
-    global _announced_online
-    if aiomqtt is None or not (_discovered or _published or _announced_online):
+    and discovery — against the broker the records were published to, so
+    switching the feature off makes the HA entities vanish instead of going
+    stale. Best effort: if the broker is unreachable the records survive and
+    the owner retries (the parked retry, and every later reconcile)."""
+    global _ledger_broker, _announced_online
+    if aiomqtt is None or not _ledger_outstanding():
         return
-    hostname, port, username, password = _broker_params()
-    if not hostname:
-        # The broker address is gone from the config: clear against the last
-        # broker actually connected to, or the payloads stay there forever.
-        if _last_broker is None:
-            print("[Bridge] No broker known to clear discovery on — keeping the records")
-            return
-        hostname, port, username, password = _last_broker
+    broker = _ledger_broker or _broker_params()
+    if not broker or not broker[0]:
+        print("[Bridge] No broker known to clear discovery on — keeping the records")
+        return
     try:
         async with aiomqtt.Client(
-            hostname=hostname, port=port, identifier=_client_id,
-            username=username, password=password,
+            hostname=broker[0], port=broker[1], identifier=_client_id,
+            username=broker[2], password=broker[3],
         ) as client:
             await client.publish(BRIDGE_AVAILABILITY, b"", retain=True)
             for pid in set(_discovered) | set(_published):
@@ -497,9 +587,10 @@ async def _clear_discovery():
             await asyncio.sleep(0.25)
     except aiomqtt.MqttError as e:
         print(f"[Bridge] Broker unreachable, retained discovery not cleared yet "
-              f"({type(e).__name__}: {e}) — the next stop clears it")
+              f"({type(e).__name__}: {e}) — retrying")
         return
     _discovered.clear()
     _published.clear()
     _published_yaml.clear()
     _announced_online = False
+    _ledger_broker = None

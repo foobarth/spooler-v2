@@ -27,10 +27,15 @@ async def broker(monkeypatch):
     monkeypatch.setattr(mqtt_bridge, "_discovered", {})
     monkeypatch.setattr(mqtt_bridge, "_published_yaml", {})
     monkeypatch.setattr(mqtt_bridge, "_announced_online", False)
-    monkeypatch.setattr(mqtt_bridge, "_last_broker", None)
+    monkeypatch.setattr(mqtt_bridge, "_ledger_broker", None)
     monkeypatch.setattr(mqtt_bridge, "_client", None)
     yield b
-    await mqtt_bridge.stop_and_clear()
+    config_set("mqtt.url", "")                  # off means off, also for the owner
+    await mqtt_bridge.sync_lifecycle()
+    t = mqtt_bridge._owner_task
+    if t is not None:
+        t.cancel()
+        await asyncio.gather(t, return_exceptions=True)
     await b.stop()
 
 
@@ -42,8 +47,8 @@ async def _wait_for_publish_after(broker, topic, n, timeout=2.0):
     await asyncio.wait_for(_poll(), timeout)
 
 
-async def test_ensure_started_connects_to_broker(broker):
-    await mqtt_bridge.ensure_started()
+async def test_sync_lifecycle_connects_to_broker(broker):
+    await mqtt_bridge.sync_lifecycle()
     conn = await broker.wait_for_connect()
     assert conn.client_id.startswith("spooler")
 
@@ -84,7 +89,7 @@ def _register_printer(monkeypatch, **status):
 
 async def test_connect_publishes_retained_discovery_with_device_info(broker, monkeypatch):
     _register_printer(monkeypatch, TempOfNozzle=210, TempTargetNozzle=215, TempOfHotbed=60)
-    await mqtt_bridge.ensure_started()
+    await mqtt_bridge.sync_lifecycle()
 
     cfg = await broker.wait_for_publish("homeassistant/sensor/p1/nozzle_temp/config")
     assert cfg.retain
@@ -103,7 +108,7 @@ async def test_connect_publishes_retained_discovery_with_device_info(broker, mon
 
 async def test_connect_announces_the_sensor_set_per_printer(broker, monkeypatch):
     _register_printer(monkeypatch)
-    await mqtt_bridge.ensure_started()
+    await mqtt_bridge.sync_lifecycle()
     await broker.wait_for_publish("spooler/p1/state")   # last thing _announce publishes
 
     topics = {p.topic for p in broker.topics("homeassistant")}
@@ -117,7 +122,7 @@ async def test_connect_announces_the_sensor_set_per_printer(broker, monkeypatch)
 
 async def test_state_topic_publishes_the_canonical_projection(broker, monkeypatch):
     _register_printer(monkeypatch, TempOfNozzle=210, TempTargetNozzle=215, TempOfHotbed=60)
-    await mqtt_bridge.ensure_started()
+    await mqtt_bridge.sync_lifecycle()
 
     msg = await broker.wait_for_publish("spooler/p1/state")
     assert msg.retain
@@ -133,7 +138,7 @@ async def test_state_topic_publishes_the_canonical_projection(broker, monkeypatc
 
 async def test_status_update_republishes_on_a_state_transition(broker, monkeypatch):
     pr = _register_printer(monkeypatch)
-    await mqtt_bridge.ensure_started()
+    await mqtt_bridge.sync_lifecycle()
     first = await broker.wait_for_publish("spooler/p1/state")
     assert json.loads(first.payload)["state"] == "offline"    # announce's initial state
 
@@ -148,7 +153,7 @@ async def test_numeric_changes_are_throttled_to_the_window(broker, monkeypatch):
     monkeypatch.setattr(mqtt_bridge, "NUMERIC_THROTTLE_S", 0.2)
     pr = _register_printer(monkeypatch, TempOfNozzle=210)
     pr.connected = True
-    await mqtt_bridge.ensure_started()
+    await mqtt_bridge.sync_lifecycle()
     await broker.wait_for_publish("spooler/p1/state")          # announce
     n = len(broker.payloads("spooler/p1/state"))
 
@@ -170,7 +175,7 @@ async def test_a_transition_is_never_throttled_even_inside_the_window(broker, mo
     monkeypatch.setattr(mqtt_bridge, "NUMERIC_THROTTLE_S", 60)
     pr = _register_printer(monkeypatch)
     pr.connected = True
-    await mqtt_bridge.ensure_started()
+    await mqtt_bridge.sync_lifecycle()
     await broker.wait_for_publish("spooler/p1/state")
     n = len(broker.payloads("spooler/p1/state"))
 
@@ -236,7 +241,7 @@ def test_bridge_state_without_canvas_has_no_canvas_keys():
 
 async def test_connect_discovers_canvas_entities(broker, monkeypatch):
     _register_printer(monkeypatch, canvas_info=CANVAS_INFO)
-    await mqtt_bridge.ensure_started()
+    await mqtt_bridge.sync_lifecycle()
 
     cfg = await broker.wait_for_publish("homeassistant/sensor/p1/canvas_tray2_status/config")
     assert cfg.retain
@@ -255,14 +260,14 @@ async def test_connect_discovers_canvas_entities(broker, monkeypatch):
 
 async def test_no_canvas_no_canvas_discovery(broker, monkeypatch):
     _register_printer(monkeypatch)
-    await mqtt_bridge.ensure_started()
+    await mqtt_bridge.sync_lifecycle()
     await broker.wait_for_publish("spooler/p1/state")
     assert not [p for p in broker.topics("homeassistant") if "canvas" in p.topic]
 
 
 async def test_canvas_arriving_later_still_gets_discovered(broker, monkeypatch):
     pr = _register_printer(monkeypatch)
-    await mqtt_bridge.ensure_started()
+    await mqtt_bridge.sync_lifecycle()
     await broker.wait_for_publish("spooler/p1/state")
     assert not [p for p in broker.topics("homeassistant") if "canvas" in p.topic]
 
@@ -283,8 +288,8 @@ async def test_canvas_arriving_later_still_gets_discovered(broker, monkeypatch):
 
 
 # ── lifecycle: the bridge must start through the REAL startup path ──────────
-# Not via tests calling ensure_started() themselves (which is why a missing
-# production wiring passed 25 tests): channels.wire() is what production runs.
+# Not via tests driving the bridge directly (which is why a missing production
+# wiring passed 25 tests): channels.wire() is what production runs.
 
 async def test_the_bridge_starts_through_the_real_startup_path(broker, monkeypatch):
     import channels
@@ -321,7 +326,7 @@ async def _wait_for_payload(broker, topic, payload):
 
 async def test_lwt_declared_and_offline_fires_when_the_connection_dies(broker, monkeypatch):
     _register_printer(monkeypatch)
-    await mqtt_bridge.ensure_started()
+    await mqtt_bridge.sync_lifecycle()
     conn = await broker.wait_for_connect()
     assert conn.will_topic == "spooler/bridge/availability"
     assert conn.will_payload == b"offline"
@@ -339,15 +344,16 @@ async def test_lwt_declared_and_offline_fires_when_the_connection_dies(broker, m
     assert offline.retain
 
 
-# ── stop_and_clear: "off means off" — entities vanish, not go stale ─────────
+# ── turning off: "off means off" — entities vanish, not go stale ────────────
 
-async def test_stop_and_clear_empties_every_retained_topic(broker, monkeypatch):
+async def test_turning_off_empties_every_retained_topic(broker, monkeypatch):
     _register_printer(monkeypatch, canvas_info=CANVAS_INFO)
-    await mqtt_bridge.ensure_started()
+    await mqtt_bridge.sync_lifecycle()
     await broker.wait_for_publish("spooler/p1/state")
     announced = sorted({p.topic for p in broker.publishes if p.retain})
 
-    await mqtt_bridge.stop_and_clear()
+    config_set("mqtt.url", "")
+    await mqtt_bridge.sync_lifecycle()
 
     cleared = {p.topic: p for p in broker.publishes if p.payload == b""}
     assert "spooler/bridge/availability" in cleared
@@ -355,24 +361,104 @@ async def test_stop_and_clear_empties_every_retained_topic(broker, monkeypatch):
         last = cleared.get(topic)
         assert last is not None, f"{topic} was never cleared"
         assert last.retain, f"{topic} was cleared non-retained"
-    assert mqtt_bridge._discovered == {} and mqtt_bridge._published == {}
 
 
-async def test_stop_and_clear_without_a_prior_run_is_a_no_op(broker):
+async def test_turning_off_without_a_prior_run_is_a_no_op(broker):
     n = len(broker.publishes)
-    await mqtt_bridge.stop_and_clear()
+    config_set("mqtt.url", "")
+    await mqtt_bridge.sync_lifecycle()
     assert len(broker.publishes) == n
 
 
-async def test_stop_and_clear_keeps_the_record_when_the_broker_is_gone(broker, monkeypatch):
-    _register_printer(monkeypatch)
-    await mqtt_bridge.ensure_started()
-    await broker.wait_for_publish("spooler/p1/state")
-    assert mqtt_bridge._discovered
+# ── lifecycle v2 (consolidation): latent holes, red on the current pile ──────
+# All three drive the production entry point (sync_lifecycle, what channels'
+# hooks call) and assert the broker log — they survive the redesign unchanged.
 
-    await broker.stop()                 # broker unreachable at clear time
-    await mqtt_bridge.stop_and_clear()
-    assert mqtt_bridge._discovered, "the record must survive so the next clear can retry"
+async def _rebind_broker(b):
+    """Stop the fake broker and listen again on the SAME port, so a URL that
+    named it keeps naming it (FakeBroker.start picks a fresh port each time)."""
+    await b.stop()
+    b._server = await asyncio.start_server(b._handle, "127.0.0.1", b.port)
+
+
+async def test_changing_the_broker_url_reconnects_and_empties_the_old_broker(broker, monkeypatch):
+    """Today the running bridge ignores a broker-URL change entirely (the run
+    task keeps the hostname it started with). The bridge must treat the URL
+    as part of desired state: clear the old broker, announce on the new."""
+    _register_printer(monkeypatch)
+    await mqtt_bridge.sync_lifecycle()
+    await broker.wait_for_connect()
+    await broker.wait_for_publish("spooler/p1/state")
+
+    b2 = fake_mqtt.FakeBroker()
+    await b2.start()
+    try:
+        config_set("mqtt.url", f"mqtt://127.0.0.1:{b2.port}")
+        await mqtt_bridge.sync_lifecycle()
+        await b2.wait_for_connect()
+        await b2.wait_for_publish("spooler/p1/state")
+        # the old broker's retained payloads are emptied, not left stale
+        await _wait_for_payload(broker, "spooler/p1/state", b"")
+        await _wait_for_payload(broker, "spooler/bridge/availability", b"")
+    finally:
+        config_set("mqtt.url", "")
+        await mqtt_bridge.sync_lifecycle()
+        await b2.stop()
+
+
+async def test_turning_off_after_a_url_change_empties_the_broker_the_payloads_live_on(broker, monkeypatch):
+    """URL moved to a second broker and the flag turned off in the same
+    moment: the clear must target the broker the payloads were published to
+    (the old one), never the freshly configured address."""
+    import features
+    _register_printer(monkeypatch)
+    await mqtt_bridge.sync_lifecycle()
+    await broker.wait_for_publish("spooler/p1/state")
+
+    b2 = fake_mqtt.FakeBroker()
+    await b2.start()
+    try:
+        config_set("mqtt.url", f"mqtt://127.0.0.1:{b2.port}")
+        features.set_enabled("mqtt_bridge", False)
+        await mqtt_bridge.sync_lifecycle()
+        await _wait_for_payload(broker, "spooler/p1/state", b"")
+        await _wait_for_payload(broker, "spooler/bridge/availability", b"")
+    finally:
+        features.set_enabled("mqtt_bridge", True)
+        await mqtt_bridge.sync_lifecycle()
+        await b2.stop()
+
+
+async def test_off_while_the_broker_is_down_clears_when_the_broker_returns(broker, monkeypatch):
+    """'Off while the broker is down' keeps the records and must retry the
+    clear by itself — without another poke or another stop."""
+    monkeypatch.setattr(mqtt_bridge, "_CLEAR_RETRY_S", 0.2, raising=False)
+    monkeypatch.setattr(mqtt_bridge, "ACK_TIMEOUT_S", 0.5, raising=False)
+    import features
+    _register_printer(monkeypatch)
+    await mqtt_bridge.sync_lifecycle()
+    await broker.wait_for_publish("spooler/p1/state")
+
+    await broker.stop()                     # broker unreachable at "off" time
+    config_set("mqtt.url", "")
+    features.set_enabled("mqtt_bridge", False)
+    await mqtt_bridge.sync_lifecycle()
+    await _rebind_broker(broker)            # back up — nobody pokes again
+    await _wait_for_payload(broker, "spooler/p1/state", b"")
+    await _wait_for_payload(broker, "spooler/bridge/availability", b"")
+
+
+async def test_poking_without_a_desire_change_keeps_the_loop_responsive(broker, monkeypatch):
+    """A poke that changes nothing (the hooks fire schedule() on every
+    unrelated feature/config write too) must not starve the event loop: this
+    exact shape — nap ends early on an already-set wake without yielding and
+    the wake was never consumed — spun the owner hot at 100 % CPU inside the
+    serve loop, freezing every other task and timer with it."""
+    await mqtt_bridge.sync_lifecycle()
+    await broker.wait_for_connect()
+    for _ in range(5):
+        await mqtt_bridge.sync_lifecycle()      # desire unchanged: pure pokes
+    await asyncio.wait_for(asyncio.sleep(0.5), 3.0)   # the loop must breathe
 
 
 # ── camera: discovered MQTT camera fed by snapshots while printing ───────────
@@ -389,7 +475,7 @@ async def test_connect_discovers_the_camera_when_the_printer_has_one(broker, mon
     _register_printer(monkeypatch)
     pr = state.printers["p1"]
     pr.camera_url = "http://192.0.2.5:8080/mjpeg"
-    await mqtt_bridge.ensure_started()
+    await mqtt_bridge.sync_lifecycle()
 
     cfg = await broker.wait_for_publish("homeassistant/camera/p1/camera/config")
     assert cfg.retain
@@ -401,7 +487,7 @@ async def test_connect_discovers_the_camera_when_the_printer_has_one(broker, mon
 
 async def test_no_camera_url_no_camera_discovery(broker, monkeypatch):
     _register_printer(monkeypatch)
-    await mqtt_bridge.ensure_started()
+    await mqtt_bridge.sync_lifecycle()
     await broker.wait_for_publish("spooler/p1/state")
     assert not [p for p in broker.topics("homeassistant") if p.topic.startswith("homeassistant/camera/")]
 
@@ -411,7 +497,7 @@ async def test_camera_frames_flow_while_printing(broker, monkeypatch):
     monkeypatch.setattr(mb, "CAMERA_INTERVAL_S", 0.05)
     monkeypatch.setattr(mb, "grab_jpeg", lambda url, timeout=5.0: b"jpeg-" + url.encode())
     _printing_printer(monkeypatch)
-    await mqtt_bridge.ensure_started()
+    await mqtt_bridge.sync_lifecycle()
 
     frame = await broker.wait_for_publish("spooler/p1/camera/frame")
     assert frame.payload == b"jpeg-http://192.0.2.5:8080/mjpeg"
@@ -426,7 +512,7 @@ async def test_camera_feeder_rests_while_not_printing(broker, monkeypatch):
     _register_printer(monkeypatch)          # connected, but idle — not printing
     state.printers["p1"].connected = True
     state.printers["p1"].camera_url = "http://192.0.2.5:8080/mjpeg"
-    await mqtt_bridge.ensure_started()
+    await mqtt_bridge.sync_lifecycle()
     await asyncio.sleep(0.15)
     assert not grabs, "an idle printer gets no frames"
 
@@ -438,7 +524,7 @@ async def test_camera_yaml_published_when_base_and_token_are_configured(broker, 
     state.printers["p1"].camera_url = "http://192.0.2.5:8080/mjpeg"
     config_set("camera.external_url", "http://spooler.lan:8080")
     config_set("camera.external_token", "TOK-123")
-    await mqtt_bridge.ensure_started()
+    await mqtt_bridge.sync_lifecycle()
 
     msg = await broker.wait_for_publish("spooler/p1/camera/mjpeg_yaml")
     assert msg.retain
@@ -451,7 +537,7 @@ async def test_camera_yaml_published_when_base_and_token_are_configured(broker, 
 async def test_camera_yaml_needs_the_config(broker, monkeypatch):
     _register_printer(monkeypatch)
     state.printers["p1"].camera_url = "http://192.0.2.5:8080/mjpeg"
-    await mqtt_bridge.ensure_started()
+    await mqtt_bridge.sync_lifecycle()
     await broker.wait_for_publish("spooler/p1/state")
     assert broker.payloads("spooler/p1/camera/mjpeg_yaml") == []
     config_set("camera.external_url", "")            # token alone is not enough either
@@ -466,7 +552,7 @@ async def test_camera_yaml_republished_when_the_token_rotates(broker, monkeypatc
     state.printers["p1"].camera_url = "http://192.0.2.5:8080/mjpeg"
     config_set("camera.external_url", "http://spooler.lan:8080")
     config_set("camera.external_token", "TOK-1")
-    await mqtt_bridge.ensure_started()
+    await mqtt_bridge.sync_lifecycle()
     await broker.wait_for_publish("spooler/p1/camera/mjpeg_yaml")
 
     config_set("camera.external_token", "TOK-2")
@@ -482,7 +568,7 @@ async def test_camera_yaml_cleared_when_the_config_goes_away(broker, monkeypatch
     state.printers["p1"].camera_url = "http://192.0.2.5:8080/mjpeg"
     config_set("camera.external_url", "http://spooler.lan:8080")
     config_set("camera.external_token", "TOK-123")
-    await mqtt_bridge.ensure_started()
+    await mqtt_bridge.sync_lifecycle()
     await broker.wait_for_publish("spooler/p1/camera/mjpeg_yaml")
 
     config_set("camera.external_token", "")
