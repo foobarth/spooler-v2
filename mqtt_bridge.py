@@ -52,26 +52,31 @@ TYPE_MODELS = {
     "moonraker": "Klipper (Moonraker)",
 }
 
-# (key, component, friendly name, unit, device_class, state_class, nullable, entity_category)
+# (key, component, friendly name, unit, device_class, state_class, nullable, entity_category, icon)
 SENSORS = [
-    ("state",            "sensor", "Status",             None, None,          None,          False, None),
-    ("nozzle_temp",      "sensor", "Nozzle temperature", "°C", "temperature", "measurement", False, None),
-    ("nozzle_target",    "sensor", "Nozzle target",      "°C", "temperature", "measurement", False, None),
-    ("bed_temp",         "sensor", "Bed temperature",    "°C", "temperature", "measurement", False, None),
-    ("bed_target",       "sensor", "Bed target",         "°C", "temperature", "measurement", False, None),
-    ("chamber_temp",     "sensor", "Chamber temperature", "°C", "temperature", "measurement", False, None),
-    ("chamber_target",   "sensor", "Chamber target",     "°C", "temperature", "measurement", False, None),
-    ("progress",         "sensor", "Progress",           "%",  None,          "measurement", True,  None),
-    ("layer",            "sensor", "Layer",              None, None,          "measurement", False, None),
-    ("total_layer",      "sensor", "Total layers",       None, None,          "measurement", False, None),
-    ("time_remaining",   "sensor", "Time remaining",     "s",  None,          "measurement", False, None),
-    ("filament_mm",      "sensor", "Filament used",      "mm", None,          "measurement", False, None),
-    ("filament_g",       "sensor", "Filament used",      "g",  None,          "measurement", False, None),
-    ("speed_factor",     "sensor", "Speed factor",       "%",  None,          "measurement", False, None),
-    ("firmware_version", "sensor", "Firmware",           None, None,          None,          True,  "diagnostic"),
+    ("state",            "sensor", "Status",             None, None,          None,          False, None,        "mdi:printer-3d"),
+    ("nozzle_temp",      "sensor", "Nozzle temperature", "°C", "temperature", "measurement", False, None,        None),
+    ("nozzle_target",    "sensor", "Nozzle target",      "°C", "temperature", "measurement", False, None,        None),
+    ("bed_temp",         "sensor", "Bed temperature",    "°C", "temperature", "measurement", False, None,        None),
+    ("bed_target",       "sensor", "Bed target",         "°C", "temperature", "measurement", False, None,        None),
+    ("chamber_temp",     "sensor", "Chamber temperature", "°C", "temperature", "measurement", False, None,       None),
+    ("chamber_target",   "sensor", "Chamber target",     "°C", "temperature", "measurement", False, None,        None),
+    ("progress",         "sensor", "Progress",           "%",  None,          "measurement", True,  None,        "mdi:percent"),
+    ("layer",            "sensor", "Layer",              None, None,          "measurement", False, None,        "mdi:layers"),
+    ("total_layer",      "sensor", "Total layers",       None, None,          "measurement", False, None,        "mdi:layers"),
+    ("time_remaining",   "sensor", "Time remaining",     "s",  "duration",    "measurement", False, None,        "mdi:timer"),
+    ("filament_mm",      "sensor", "Filament used",      "mm", None,          "total_increasing", False, None,   "mdi:tape-measure"),
+    ("filament_g",       "sensor", "Filament used",      "g",  "weight",      "total_increasing", False, None,    "mdi:weight"),
+    ("speed_factor",     "sensor", "Speed factor",       "%",  None,          "measurement", False, None,        "mdi:speedometer"),
+    ("firmware_version", "sensor", "Firmware",           None, None,          None,          True,  "diagnostic", "mdi:chip"),
 ]
 
-BINARY_SENSORS = [("connected", "Connected"), ("printing", "Printing")]
+# (key, friendly name, extra discovery fields) — device_class gives the icon
+# and the on/off wording in HA; plain icons where no class fits.
+BINARY_SENSORS = [
+    ("connected", "Connected", {"device_class": "connectivity"}),
+    ("printing",  "Printing",  {"icon": "mdi:printer-3d"}),
+]
 
 # Tray status 0/1/2, verified live 2026-11-24: dynamic state, not static
 # config — the previously active tray moves 2→1 when the active tray changes.
@@ -118,7 +123,8 @@ def _device(pid: str, d: dict) -> dict:
 
 def _entity_payload(pid: str, d: dict, component: str, key: str, name: str,
                     unit=None, device_class=None, state_class=None,
-                    nullable=False, category=None, binary=False) -> dict:
+                    nullable=False, category=None, icon=None, binary=False,
+                    **extra) -> dict:
     p = {
         "name": name,
         "state_topic": _state_topic(pid),
@@ -133,22 +139,25 @@ def _entity_payload(pid: str, d: dict, component: str, key: str, name: str,
         p["device_class"] = device_class
     if state_class:
         p["state_class"] = state_class
+    if icon:
+        p["icon"] = icon
     if category:
         p["entity_category"] = category
     if binary:
         p["payload_on"] = "True"
         p["payload_off"] = "False"
+    p.update(extra)
     return p
 
 
 def _discovery_messages(pid: str, d: dict):
     """(topic, json payload) for every discovered entity of one printer."""
-    for key, component, name, unit, device_class, state_class, nullable, category in SENSORS:
+    for key, component, name, unit, device_class, state_class, nullable, category, icon in SENSORS:
         payload = _entity_payload(pid, d, component, key, name, unit, device_class,
-                                  state_class, nullable, category)
+                                  state_class, nullable, category, icon)
         yield _discovery_topic(component, pid, key), json.dumps(payload)
-    for key, name in BINARY_SENSORS:
-        payload = _entity_payload(pid, d, "binary_sensor", key, name, binary=True)
+    for key, name, extra in BINARY_SENSORS:
+        payload = _entity_payload(pid, d, "binary_sensor", key, name, binary=True, **extra)
         yield _discovery_topic("binary_sensor", pid, key), json.dumps(payload)
     canvas = d.get("canvas")
     if isinstance(canvas, dict) and canvas.get("trays"):
@@ -165,16 +174,22 @@ def _discovery_messages(pid: str, d: dict):
 
 def _canvas_entities(pid: str, d: dict, canvas: dict):
     """(topic, json payload) for one printer's Canvas entities: the active
-    tray plus status/material/brand/color per tray the printer reports."""
+    tray plus status/material/brand/color per tray the printer reports.
+    Tray names are 1-based like the printer's screen; tray_id stays 0-based
+    in the unique ids/keys (protocol truth)."""
     yield _discovery_topic("sensor", pid, "canvas_active_tray"), json.dumps(
-        _entity_payload(pid, d, "sensor", "canvas_active_tray", "Active tray"))
+        _entity_payload(pid, d, "sensor", "canvas_active_tray", "Active tray",
+                        icon="mdi:tray"))
+    icons = {"status": "mdi:tray", "material": "mdi:texture",
+             "brand": "mdi:tag", "color": "mdi:palette"}
     for t in canvas.get("trays") or []:
         tid = t.get("id")
         if not isinstance(tid, int) or tid < 0:
             continue
         for suffix in ("status", "material", "brand", "color"):
             key = f"canvas_tray{tid}_{suffix}"
-            payload = _entity_payload(pid, d, "sensor", key, f"Tray {tid + 1} {suffix}")
+            payload = _entity_payload(pid, d, "sensor", key,
+                                      f"Tray {tid + 1} {suffix}", icon=icons[suffix])
             yield _discovery_topic("sensor", pid, key), json.dumps(payload)
 
 
@@ -210,7 +225,11 @@ def bridge_state(printer: dict) -> dict:
     canvas = printer.get("canvas")
     if isinstance(canvas, dict) and canvas.get("trays"):
         active = canvas.get("active_tray")
-        out["canvas_active_tray"] = active if isinstance(active, int) and active >= 0 else "none"
+        # tray_id is 0-based (canvas protocol); the printer's screen and this
+        # bridge's own "Tray N" entities are 1-based — HA must agree with the
+        # screen, so the active tray is shown +1. -1/unknown stays "none"
+        # (never invent a tray 0 — §4b).
+        out["canvas_active_tray"] = active + 1 if isinstance(active, int) and active >= 0 else "none"
         for t in canvas["trays"]:
             tid = t.get("id")
             if not isinstance(tid, int) or tid < 0:

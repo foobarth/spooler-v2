@@ -246,6 +246,20 @@ def test_machine_status_does_not_override_active_print(printer):
     assert printer.status["PrintInfo"]["Status"] == 3
 
 
+def test_total_layer_falls_back_to_the_sliced_layer_count(printer):
+    # The periodic 6000 partial pushes carry current_layer but not total_layer
+    # (only the full 1002 frame does — CC2_INTEGRATION.md §4b), so HA showed a
+    # flat 0. The sliced layer count from the file metadata (method 1046)
+    # fills the gap; verified live: 357 layers at 56 % ≈ the 666-layer file.
+    printer._expected_total_layer = 666
+    printer._cc2_state["print_status"] = {"state": "printing", "print_duration": 10,
+                                          "remaining_time_sec": 100, "current_layer": 357}
+    printer._apply_cc2_status()
+    assert printer.status["PrintInfo"]["CurrentLayer"] == 357
+    assert printer.status["PrintInfo"]["TotalLayer"] == 666
+    assert printer.to_dict()["total_layer"] == 666
+
+
 @pytest.mark.parametrize("ms,sub,expected_phase", [
     (2, 1405, "Heating bed"),
     (2, 1045, "Heating nozzle"),

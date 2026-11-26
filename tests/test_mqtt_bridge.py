@@ -305,7 +305,9 @@ def test_bridge_state_projects_canvas_canonical_keys():
     pr = PrinterConnection("p1", "192.0.2.5", "Workshop")
     pr.status = {"canvas_info": CANVAS_INFO}
     out = mqtt_bridge.bridge_state(pr.to_dict())
-    assert out["canvas_active_tray"] == 2          # numbers stay numbers
+    # tray_id 2 is "Tray 3" (0-based protocol, 1-based screen/entities): the
+    # sensor shows what the printer's screen shows.
+    assert out["canvas_active_tray"] == 3
     assert out["canvas_tray2_status"] == "active"  # 0/1/2 rendered once, here
     assert out["canvas_tray2_material"] == "PLA"
     assert out["canvas_tray2_brand"] == "ELEGOO"
@@ -374,7 +376,7 @@ async def test_canvas_arriving_later_still_gets_discovered(broker, monkeypatch):
             await asyncio.sleep(0.01)
     await asyncio.wait_for(_state_has_canvas(), 2.0)
     last = json.loads(broker.payloads("spooler/p1/state")[-1])
-    assert last["canvas_active_tray"] == 2
+    assert last["canvas_active_tray"] == 3         # tray_id 2 = "Tray 3" (1-based, like the screen)
 
 
 # ── lifecycle: the bridge must start through the REAL startup path ──────────
@@ -704,3 +706,28 @@ async def test_a_dead_socket_self_heals(broker, monkeypatch):
 
     monkeypatch.setattr(paho_mqtt.Client, "publish", hang_paho_publish)
     await _wait_for_publish_after(broker, "spooler/p1/camera/frame", n, timeout=15.0)
+
+
+def test_discovery_config_is_ha_quality():
+    """Units, device classes, state classes and icons: HA should render every
+    entity as a first-class citizen — duration switchable in more-info,
+    weight with proper class, themed icons."""
+    from printers.base import PrinterConnection
+    pr = PrinterConnection("p1", "192.0.2.5", "Workshop")
+    pr.connected = True
+    pr.attrs = {"FirmwareVersion": "1.2.3"}
+    pr.status = {"PrintInfo": {"CurrentLayer": 12, "TotalLayer": 100, "RemainTime": 300}}
+    d = pr.to_dict()
+    payloads = {t.split("/")[1] + "/" + t.split("/")[3]:
+                json.loads(p) for t, p in mqtt_bridge._discovery_messages("p1", d)}
+    tr = payloads["sensor/time_remaining"]
+    assert tr["device_class"] == "duration" and tr["unit_of_measurement"] == "s"
+    fg = payloads["sensor/filament_g"]
+    assert fg["device_class"] == "weight" and fg["state_class"] == "total_increasing"
+    fm = payloads["sensor/filament_mm"]
+    assert fm["state_class"] == "total_increasing" and fm["icon"] == "mdi:tape-measure"
+    assert payloads["sensor/time_remaining"]["icon"] == "mdi:timer"
+    assert payloads["sensor/speed_factor"]["icon"] == "mdi:speedometer"
+    assert payloads["sensor/firmware_version"]["icon"] == "mdi:chip"
+    assert payloads["binary_sensor/connected"]["device_class"] == "connectivity"
+    assert payloads["binary_sensor/printing"]["icon"] == "mdi:printer-3d"

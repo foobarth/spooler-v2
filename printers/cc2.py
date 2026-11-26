@@ -170,6 +170,8 @@ class CC2Connection(PrinterConnection):
         self._pending_meta_fut:  asyncio.Future | None = None
         self._expected_filament_g    = 0.0  # from method 1046 at print start
         self._expected_print_time_s  = 0    # from method 1046 at print start
+        self._expected_total_layer   = 0    # from method 1046 at print start: the
+                                            # 6000 partials carry current_layer only
         self._last_active_filament_mm = 0.0 # snapshot for cancelled prints
         self._meta_fetch_filename    = ""   # avoid duplicate 1046 fetches
 
@@ -421,6 +423,9 @@ class CC2Connection(PrinterConnection):
                 pt = inner.get("print_time")
                 if pt is not None and int(pt or 0) > 0:
                     self._expected_print_time_s = int(pt)
+                ly = inner.get("layer")
+                if ly is not None and int(ly or 0) > 0:
+                    self._expected_total_layer = int(ly)
                 if self._expected_filament_g or self._expected_print_time_s:
                     print(f"[Printer {self.name}] File metadata: "
                           f"{self._expected_filament_g}g / {self._expected_print_time_s}s")
@@ -1037,7 +1042,10 @@ class CC2Connection(PrinterConnection):
                 # Verified 2026-10-22 against a real CC2 (Tharje): the printer
                 # does push current_layer/total_layer in print_status.
                 "CurrentLayer":   ps.get("current_layer", 0),
-                "TotalLayer":     ps.get("total_layer", 0),
+                # The 6000 partials don't carry total_layer (only the full
+                # 1002 frame does) — the 1046 file metadata's sliced layer
+                # count fills the gap (§4b).
+                "TotalLayer":     ps.get("total_layer", 0) or self._expected_total_layer,
                 "CurrentTicks":   progress,
                 "TotalTicks":     100,
                 "PrintTime":      print_duration,
