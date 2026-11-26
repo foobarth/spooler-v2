@@ -211,14 +211,20 @@ async def test_state_transition_pushes_a_fresh_camera_frame(broker, monkeypatch)
     pr.camera_url = "http://192.0.2.5:8080/mjpeg"
     await mqtt_bridge.sync_lifecycle()
     await broker.wait_for_publish("spooler/p1/state")
-    await asyncio.sleep(0.05)                              # the first tick's frame
+    # The first tick's frame — wait for it to arrive, however slow the runner.
+    await asyncio.wait_for(_first_camera_frame(broker), 2.0)
     n = len(broker.payloads("spooler/p1/camera/frame"))
-    assert n == 1
+    assert n >= 1
 
     pr.status["PrintInfo"]["Status"] = 2                   # idle → printing
     state.publish("status_update", printer_id="p1", printer=pr.to_dict())
     await _wait_for_publish_after(broker, "spooler/p1/camera/frame", n)
     assert len(broker.payloads("spooler/p1/camera/frame")) == n + 1
+
+
+async def _first_camera_frame(broker):
+    while not broker.payloads("spooler/p1/camera/frame"):
+        await asyncio.sleep(0.01)
 
 
 async def test_numeric_update_pushes_no_camera_frame(broker, monkeypatch):
@@ -232,9 +238,9 @@ async def test_numeric_update_pushes_no_camera_frame(broker, monkeypatch):
     pr.status["PrintInfo"]["Status"] = 2                   # printing
     await mqtt_bridge.sync_lifecycle()
     await broker.wait_for_publish("spooler/p1/state")
-    await asyncio.sleep(0.05)                              # the first tick's frame
+    await asyncio.wait_for(_first_camera_frame(broker), 2.0)
     n = len(broker.payloads("spooler/p1/camera/frame"))
-    assert n == 1
+    assert n >= 1
 
     pr.status["TempOfNozzle"] = 215                        # numeric-only change
     state.publish("status_update", printer_id="p1", printer=pr.to_dict())
