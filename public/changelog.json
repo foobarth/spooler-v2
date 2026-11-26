@@ -1,5 +1,12 @@
 [
   {
+    "version": "2.4.0-beta.11",
+    "date": "2026-11-26",
+    "changes": [
+      "Live camera streaming into Home Assistant without any token: each printer card's camera gets a hover 'Stream URL' copy button — paste the URL into HA's Generic Camera and it becomes a live camera entity (works while Spooler auth is disabled). The discovered MQTT snapshot camera stays as the zero-config path"
+    ]
+  },
+  {
     "version": "2.3.9",
     "date": "2026-11-26",
     "changes": [
