@@ -1,5 +1,12 @@
 [
   {
+    "version": "2.4.0-beta.21",
+    "date": "2026-11-26",
+    "changes": [
+      "Camera fix for freshly booted print servers: the first snapshot after a boot was gated behind host uptime (time.monotonic counts from boot), leaving the camera dark for up to a minute on a new boot — the first grab is now always due"
+    ]
+  },
+  {
     "version": "2.4.0-beta.20",
     "date": "2026-11-26",
     "changes": [
