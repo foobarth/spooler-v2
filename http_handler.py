@@ -363,10 +363,15 @@ class SPHandler(ExternalRoutesMixin, ProxyMixin, AdminMixin, SimpleHTTPRequestHa
         # Camera endpoints sit above the session gate: they carry their own
         # guards — per-user visibility (with the session check the global gate
         # would have done), or the external camera token for Home Assistant
-        # image URLs (see _camera_token_ok).
+        # image URLs (see _camera_token_ok). Under the token the snapshot URL
+        # is the LIVE CAMERA STILL (Home Assistant's still_image_url carries a
+        # printer id, which the print-history handler could never serve);
+        # the signed-in browser keeps using it for print-history pictures.
         if self.path.startswith("/api/snapshot/"):
             pid = urllib.parse.unquote(self.path[len("/api/snapshot/"):].split("?")[0])
-            if self._camera_token_ok() or (self._check_auth() and self._require_printer(pid)):
+            if self._camera_token_ok():
+                self._camera_still(pid)
+            elif self._check_auth() and self._require_printer(pid):
                 self._handle_snapshot()
             return
         if self.path.startswith("/api/camera/"):
