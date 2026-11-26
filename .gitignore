@@ -27,3 +27,6 @@ raw/
 # Local-only working notes (not for the public repo)
 obico-protokoll-notat.md
 memory/
+
+# Local dev instance state (make dev)
+.dev-data/

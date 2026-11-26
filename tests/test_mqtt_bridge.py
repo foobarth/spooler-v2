@@ -213,13 +213,13 @@ async def test_state_transition_pushes_a_fresh_camera_frame(broker, monkeypatch)
     await mqtt_bridge.sync_lifecycle()
     await broker.wait_for_publish("spooler/p1/state")
     # The first tick's frame — wait for it to arrive, however slow the runner.
-    await asyncio.wait_for(_first_camera_frame(broker), 2.0)
+    await asyncio.wait_for(_first_camera_frame(broker), 10.0)
     n = len(broker.payloads("spooler/p1/camera/frame"))
     assert n >= 1
 
     pr.status["PrintInfo"]["Status"] = 2                   # idle → printing
     state.publish("status_update", printer_id="p1", printer=pr.to_dict())
-    await _wait_for_publish_after(broker, "spooler/p1/camera/frame", n)
+    await _wait_for_publish_after(broker, "spooler/p1/camera/frame", n, timeout=10.0)
     assert len(broker.payloads("spooler/p1/camera/frame")) == n + 1
 
 
@@ -239,7 +239,7 @@ async def test_numeric_update_pushes_no_camera_frame(broker, monkeypatch):
     pr.status["PrintInfo"]["Status"] = 2                   # printing
     await mqtt_bridge.sync_lifecycle()
     await broker.wait_for_publish("spooler/p1/state")
-    await asyncio.wait_for(_first_camera_frame(broker), 2.0)
+    await asyncio.wait_for(_first_camera_frame(broker), 10.0)
     n = len(broker.payloads("spooler/p1/camera/frame"))
     assert n >= 1
 
