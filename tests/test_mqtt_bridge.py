@@ -121,7 +121,8 @@ async def test_connect_announces_the_sensor_set_per_printer(broker, monkeypatch)
 
 
 async def test_state_topic_publishes_the_canonical_projection(broker, monkeypatch):
-    _register_printer(monkeypatch, TempOfNozzle=210, TempTargetNozzle=215, TempOfHotbed=60)
+    pr = _register_printer(monkeypatch, TempOfNozzle=210, TempTargetNozzle=215, TempOfHotbed=60)
+    pr.connected = True   # offline printers zero their temps (history, not a reading)
     await mqtt_bridge.sync_lifecycle()
 
     msg = await broker.wait_for_publish("spooler/p1/state")
@@ -130,8 +131,19 @@ async def test_state_topic_publishes_the_canonical_projection(broker, monkeypatc
     assert set(s) == PROJECTION_KEYS
     assert s["nozzle_temp"] == 210
     assert s["progress"] == 12          # from layers 12/100, computed by to_dict()
-    assert s["printing"] is False       # printer is not connected → "offline"
+    assert s["printing"] is False       # printer is not printing → "idle"
     assert s["firmware_version"] == "1.2.3"
+
+
+async def test_state_topic_zeroes_temps_for_an_offline_printer(broker, monkeypatch):
+    # An offline printer's last readings are history, not a measurement —
+    # the projection must not hand HA a stale 210 °C.
+    _register_printer(monkeypatch, TempOfNozzle=210, TempTargetNozzle=215, TempOfHotbed=60)
+    await mqtt_bridge.sync_lifecycle()
+
+    msg = await broker.wait_for_publish("spooler/p1/state")
+    s = json.loads(msg.payload)
+    assert (s["nozzle_temp"], s["nozzle_target"], s["bed_temp"]) == (0, 0, 0)
 
 
 # ── status_update fan-out: transitions immediate, numerics throttled ────────
