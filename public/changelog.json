@@ -1,5 +1,12 @@
 [
   {
+    "version": "2.4.0-beta.14",
+    "date": "2026-11-26",
+    "changes": [
+      "Note: beta.13 shipped without its camera fix (a build mishap) — this one actually contains it. The Home Assistant camera no longer shows a broken image on an idle printer: it receives a frame as soon as the bridge connects and roughly every minute while idle, plus an immediate frame on every state event (print start, pause, finish). The camera feeder also logs its gate decisions, grabs and publishes so a silent failure can't hide again"
+    ]
+  },
+  {
     "version": "2.3.9",
     "date": "2026-11-26",
     "changes": [
