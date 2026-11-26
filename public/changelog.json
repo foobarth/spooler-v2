@@ -1,5 +1,12 @@
 [
   {
+    "version": "2.4.0-beta.20",
+    "date": "2026-11-26",
+    "changes": [
+      "Home Assistant entity quality pass: Total layers now shows the real sliced count (the live status pushes carry only the current layer — the file metadata fills the gap), Time remaining is a proper duration sensor (switchable to minutes/hours in more-info), Filament used gets the weight class and counts up across a print, the Active tray sensor matches the printer's screen numbering (Tray 3 instead of 2), and every entity gets a fitting icon — connectivity for Connected, themed icons everywhere else"
+    ]
+  },
+  {
     "version": "2.4.0-beta.19",
     "date": "2026-11-26",
     "changes": [
