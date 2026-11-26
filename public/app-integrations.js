@@ -378,7 +378,7 @@ function _applyFeatures(list) {
 const _FEATURE_GROUPS = [
   { title: "Monitoring",    keys: ["camera", "print_snapshot", "spaghetti_detection", "dataset_collection"] },
   { title: "Notifications", keys: ["notifications"] },
-  { title: "Integrations",  keys: ["mqtt_bridge", "webhook_buttons"] },
+  { title: "Integrations",  keys: ["mqtt_bridge"] },
   { title: "Data",          keys: ["backup", "statistics", "service_log"] },
   { title: "Printing",      keys: ["job_queue", "advanced_control"] },
   { title: "Services",      keys: ["spoolman", "update_check"] },
