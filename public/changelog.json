@@ -1,9 +1,9 @@
 [
   {
-    "version": "2.4.0-beta.16",
+    "version": "2.4.0-beta.17",
     "date": "2026-11-26",
     "changes": [
-      "Build mishap post-mortem: beta.15 shipped without its retained-camera change (same class as beta.13) — this tag is cut directly from the branch that carries it and is verified against it. The retained-camera behavior itself is unchanged from the beta.15 announcement: re-enabling the feature, restarting Home Assistant or reloading the entity shows the picture immediately; the frame is cleared when the printer goes offline and when the bridge is switched off"
+      "Retained camera frames (never shipped in beta.16 — its build failed): re-enabling the bridge, restarting Home Assistant or reloading the entity shows the camera picture immediately. The frame is cleared when the printer goes offline and when the bridge is switched off, so off still empties everything"
     ]
   },
   {
