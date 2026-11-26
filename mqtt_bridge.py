@@ -510,24 +510,25 @@ async def on_status(payload: dict) -> None:
     if not pid or not d or _client is None:
         return
     fresh = bridge_state(d)
+    sent = _published.setdefault(pid, _Sent())
+    changed = {k for k in fresh if fresh[k] != sent.json.get(k)}
+    immediate = any(k in _IMMEDIATE for k in changed)
     # A printer gained discoverable extras since the last announce (canvas
     # trays from the 30 s poll, a camera that appeared): announce what is
     # missing and publish the state right away — the new entities should
     # not sit behind the numeric throttle reading "unknown".
     if await _sync_discovery(pid, d):
         await _publish_state(pid, fresh)
+        if immediate:
+            _schedule_frame_now(pid, d)     # the event frame rides every path
         return
-    sent = _published.setdefault(pid, _Sent())
     if sent.json is None:
         await _publish_state(pid, fresh)        # first sight after (re)connect
         return
-    changed = {k for k in fresh if fresh[k] != sent.json.get(k)}
-    if changed and (any(k in _IMMEDIATE for k in changed)
+    if changed and (immediate
                     or time.monotonic() - sent.ts >= NUMERIC_THROTTLE_S):
         await _publish_state(pid, fresh)
-        if any(k in _IMMEDIATE for k in changed):
-            # A state event is exactly when the picture changes (print start,
-            # pause, finish): push a frame now, not one cadence behind.
+        if immediate:
             _schedule_frame_now(pid, d)
 
 

@@ -228,6 +228,33 @@ async def _first_camera_frame(broker):
         await asyncio.sleep(0.01)
 
 
+async def test_state_transition_with_discovery_republish_still_frames(broker, monkeypatch):
+    # The event frame must not depend on which publish path the transition
+    # takes: when _sync_discovery republishes (announce gap), the early
+    # return used to skip the frame entirely.
+    import mqtt_bridge as mb
+    monkeypatch.setattr(mb, "CAMERA_INTERVAL_S", 60.0)
+    monkeypatch.setattr(mb, "IDLE_CAMERA_INTERVAL_S", 60.0)
+    monkeypatch.setattr(mb, "grab_jpeg", lambda url, timeout=5.0: b"jpeg")
+    monkeypatch.setattr(mb, "_sync_discovery", lambda pid, d: _true())
+    pr = _register_printer(monkeypatch)
+    pr.connected = True
+    pr.camera_url = "http://192.0.2.5:8080/mjpeg"
+    await mqtt_bridge.sync_lifecycle()
+    await broker.wait_for_publish("spooler/p1/state")
+    await asyncio.wait_for(_first_camera_frame(broker), 10.0)   # the first tick's frame
+    n = len(broker.payloads("spooler/p1/camera/frame"))
+
+    pr.status["PrintInfo"]["Status"] = 2                   # idle → printing
+    state.publish("status_update", printer_id="p1", printer=pr.to_dict())
+    await _wait_for_publish_after(broker, "spooler/p1/camera/frame", n, timeout=10.0)
+    assert len(broker.payloads("spooler/p1/camera/frame")) == n + 1   # via the event path
+
+
+async def _true():
+    return True
+
+
 async def test_numeric_update_pushes_no_camera_frame(broker, monkeypatch):
     import mqtt_bridge as mb
     monkeypatch.setattr(mb, "CAMERA_INTERVAL_S", 60.0)
