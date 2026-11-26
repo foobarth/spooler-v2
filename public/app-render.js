@@ -2,30 +2,6 @@
 "use strict";
 
 // ─── Rendering ─────────────────────────────────────────────────────────────────
-
-async function copyStreamUrl(pid) {
-  // The stream the card plays is the stream Home Assistant's Generic Camera
-  // plays — same endpoint, one absolute URL to paste. Works unauthenticated
-  // while Spooler auth is disabled (auth is an .env choice); auth-enabled
-  // deployments are a recorded followup (docs/adr-mqtt-bridge.md).
-  const url = `${location.origin}/api/camera/${encodeURIComponent(pid)}`;
-  try {
-    await navigator.clipboard.writeText(url);
-  } catch (_) {
-    // Clipboard API needs a secure context; Spooler serves plain HTTP, where
-    // the deprecated execCommand path still works.
-    const ta = document.createElement("textarea");
-    ta.value = url;
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand("copy");
-    ta.remove();
-  }
-  toast("Livestream URL copied");
-}
-
 function renderPrinter(printer) {
   const grid = document.getElementById("printer-grid");
   const cardId = `card-${printer.id}`;
@@ -108,11 +84,6 @@ function renderPrinter(printer) {
         </svg>
         <span>${!connected ? "Printer offline" : printer.camera_connected === false ? "Camera not connected on printer" : "No camera feed"}</span>
       </div>
-      ${cameraUrl ? `<button type="button" class="camera-copy-url" title="Copy the livestream URL — paste it into Home Assistant's Generic Camera for a live camera entity"
-             onclick="copyStreamUrl('${escAttr(printer.id)}')">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-        Stream URL
-      </button>` : ""}
     </div>
 
     <!-- Progress (only when printing/paused) -->

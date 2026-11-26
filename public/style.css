@@ -344,29 +344,6 @@ main {
 .camera-light-overlay:hover { background: rgba(0,0,0,.75); }
 .camera-light-overlay svg { width: 32px; height: 32px; color: var(--yellow); opacity: .9; }
 
-/* Copyable livestream URL for Home Assistant's Generic Camera — hover-reveal
-   so the card stays clean; sits above the light overlay when that is up. */
-.camera-copy-url {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 2;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 9px;
-  font-size: 11px;
-  border-radius: 6px;
-  border: 1px solid rgba(255,255,255,.25);
-  background: rgba(0,0,0,.6);
-  color: #fff;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity .15s;
-}
-.card-camera:hover .camera-copy-url { opacity: 1; }
-.camera-copy-url svg { width: 13px; height: 13px; }
-
 /* Print Progress */
 .card-progress-wrap {
   padding: 14px 18px;
