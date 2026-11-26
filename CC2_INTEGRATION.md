@@ -162,6 +162,10 @@ select a tray, then the file's embedded spool assignment overrides it (observed:
 `active_tray_id` is authoritative for what the printer actually feeds, and
 `color_map.t` agrees with it. Spooler's Spoolman auto-assign already follows
 `active_tray_id` transitions, so this behaves correctly without extra logic.
+Provenance of the observation: the file came from OrcaSlicer and the print was
+started through Spooler's UI — whether a Spooler-sent `slot_map` can also be
+overridden this way is **not verified** ⚠️; if it can, the start dialog's slot
+choice would not always hold.
 
 ---
 
