@@ -25,6 +25,7 @@ async def broker(monkeypatch):
     config_set("mqtt.url", f"mqtt://127.0.0.1:{b.port}")
     monkeypatch.setattr(mqtt_bridge, "_published", {})
     monkeypatch.setattr(mqtt_bridge, "_discovered", {})
+    monkeypatch.setattr(mqtt_bridge, "_camera_last_sent", {})
     monkeypatch.setattr(mqtt_bridge, "_announced_online", False)
     monkeypatch.setattr(mqtt_bridge, "_ledger_broker", None)
     monkeypatch.setattr(mqtt_bridge, "_client", None)
@@ -195,6 +196,49 @@ async def test_a_transition_is_never_throttled_even_inside_the_window(broker, mo
     state.publish("status_update", printer_id="p1", printer=pr.to_dict())
     await _wait_for_publish_after(broker, "spooler/p1/state", n)
     assert json.loads(broker.payloads("spooler/p1/state")[-1])["printing"] is True
+
+
+async def test_state_transition_pushes_a_fresh_camera_frame(broker, monkeypatch):
+    # A state event is exactly when the picture changes (print start, pause,
+    # finish): the frame must arrive with the transition, not one cadence behind.
+    import mqtt_bridge as mb
+    monkeypatch.setattr(mb, "CAMERA_INTERVAL_S", 60.0)      # cadence silent
+    monkeypatch.setattr(mb, "IDLE_CAMERA_INTERVAL_S", 60.0)
+    monkeypatch.setattr(mb, "grab_jpeg", lambda url, timeout=5.0: b"jpeg")
+    pr = _register_printer(monkeypatch)
+    pr.connected = True
+    pr.camera_url = "http://192.0.2.5:8080/mjpeg"
+    await mqtt_bridge.sync_lifecycle()
+    await broker.wait_for_publish("spooler/p1/state")
+    await asyncio.sleep(0.05)                              # the first tick's frame
+    n = len(broker.payloads("spooler/p1/camera/frame"))
+    assert n == 1
+
+    pr.status["PrintInfo"]["Status"] = 2                   # idle → printing
+    state.publish("status_update", printer_id="p1", printer=pr.to_dict())
+    await _wait_for_publish_after(broker, "spooler/p1/camera/frame", n)
+    assert len(broker.payloads("spooler/p1/camera/frame")) == n + 1
+
+
+async def test_numeric_update_pushes_no_camera_frame(broker, monkeypatch):
+    import mqtt_bridge as mb
+    monkeypatch.setattr(mb, "CAMERA_INTERVAL_S", 60.0)
+    monkeypatch.setattr(mb, "IDLE_CAMERA_INTERVAL_S", 60.0)
+    monkeypatch.setattr(mb, "grab_jpeg", lambda url, timeout=5.0: b"jpeg")
+    pr = _register_printer(monkeypatch, TempOfNozzle=210)
+    pr.connected = True
+    pr.camera_url = "http://192.0.2.5:8080/mjpeg"
+    pr.status["PrintInfo"]["Status"] = 2                   # printing
+    await mqtt_bridge.sync_lifecycle()
+    await broker.wait_for_publish("spooler/p1/state")
+    await asyncio.sleep(0.05)                              # the first tick's frame
+    n = len(broker.payloads("spooler/p1/camera/frame"))
+    assert n == 1
+
+    pr.status["TempOfNozzle"] = 215                        # numeric-only change
+    state.publish("status_update", printer_id="p1", printer=pr.to_dict())
+    await asyncio.sleep(0.1)
+    assert len(broker.payloads("spooler/p1/camera/frame")) == n, "no transition, no frame"
 
 
 # ── Canvas: canonical to_dict["canvas"] projected + discovered ──────────────
@@ -515,15 +559,36 @@ async def test_camera_frames_flow_while_printing(broker, monkeypatch):
     assert not frame.retain             # a stale frame must not outlive the stream
 
 
-async def test_camera_feeder_rests_while_not_printing(broker, monkeypatch):
+async def test_camera_feeds_slowly_while_idle(broker, monkeypatch):
+    # HA's MQTT camera holds no image until the first frame arrives — a
+    # print-gated feed left the entity broken on an idle printer (observed
+    # in real HA 2026-11-26). Idle printers feed at the slow idle cadence.
     import mqtt_bridge as mb
     monkeypatch.setattr(mb, "CAMERA_INTERVAL_S", 0.05)
+    monkeypatch.setattr(mb, "IDLE_CAMERA_INTERVAL_S", 0.3)
     grabs = []
     monkeypatch.setattr(mb, "grab_jpeg", lambda url, timeout=5.0: grabs.append(url) or b"jpeg")
     _register_printer(monkeypatch)          # connected, but idle — not printing
     state.printers["p1"].connected = True
     state.printers["p1"].camera_url = "http://192.0.2.5:8080/mjpeg"
     await mqtt_bridge.sync_lifecycle()
+
+    await broker.wait_for_publish("spooler/p1/camera/frame")   # first frame promptly
     await asyncio.sleep(0.15)
-    assert not grabs, "an idle printer gets no frames"
+    assert len(grabs) == 1, "inside the idle window the camera rests"
+    await asyncio.sleep(0.3)
+    assert len(grabs) == 2, "past the idle window the camera feeds again"
+
+
+async def test_camera_feeds_nothing_while_offline(broker, monkeypatch):
+    import mqtt_bridge as mb
+    monkeypatch.setattr(mb, "CAMERA_INTERVAL_S", 0.05)
+    monkeypatch.setattr(mb, "IDLE_CAMERA_INTERVAL_S", 0.05)
+    grabs = []
+    monkeypatch.setattr(mb, "grab_jpeg", lambda url, timeout=5.0: grabs.append(url) or b"jpeg")
+    _register_printer(monkeypatch)          # not connected
+    state.printers["p1"].camera_url = "http://192.0.2.5:8080/mjpeg"
+    await mqtt_bridge.sync_lifecycle()
+    await asyncio.sleep(0.15)
+    assert not grabs, "an offline printer gets no frames"
 

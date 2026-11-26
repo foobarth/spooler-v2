@@ -31,6 +31,7 @@ from snapshot import grab_jpeg
 
 NUMERIC_THROTTLE_S = 5.0    # numerics republish at most this often
 CAMERA_INTERVAL_S = 10.0    # snapshot cadence while a print is running
+IDLE_CAMERA_INTERVAL_S = 60.0   # snapshot cadence while connected but idle
 
 _client_id = "spooler-bridge"
 
@@ -230,18 +231,31 @@ def _broker_params():
 
 
 async def _camera_tick(client, wanted) -> None:
-    """One snapshot round for every printing/paused printer with a camera,
-    roughly every CAMERA_INTERVAL_S (ADR: ~10 s while printing, nothing
-    when idle/offline). Frames are not retained — a stale frame must not
-    outlive the stream. A lifecycle change ends the round at printer
-    granularity; the in-flight grab (executor, ~5 s) is uncancellable."""
+    """One snapshot round for every connected printer with a camera: ~10 s
+    while printing/paused, ~IDLE_CAMERA_INTERVAL_S otherwise, nothing when
+    offline. The idle feed is not a nicety: HA's MQTT camera holds no image
+    until the first frame arrives (MqttCamera._last_image starts None), so
+    a print-gated feed rendered the entity broken on an idle printer —
+    observed in real HA 2026-11-26. Frames are not retained — a stale frame
+    must not outlive the stream. A lifecycle change ends the round at
+    printer granularity; the in-flight grab (executor, ~5 s) is
+    uncancellable."""
     loop = asyncio.get_running_loop()
+    now = time.monotonic()
     for pid, pr in list(state.printers.items()):
         if _desired_params() != wanted:
             return
         d = _printer_dict(pr)
-        if d.get("state") not in ("printing", "paused") or not d.get("camera_url"):
+        if not d.get("connected") or not d.get("camera_url"):
+            _camera_last_sent.pop(pid, None)
             continue
+        interval = CAMERA_INTERVAL_S if d.get("state") in ("printing", "paused") \
+            else IDLE_CAMERA_INTERVAL_S
+        if now - _camera_last_sent.get(pid, 0.0) < interval:
+            continue
+        # A failed grab consumes the slot too: a cold or broken camera is
+        # retried at the cadence, not hammered every tick.
+        _camera_last_sent[pid] = now
         jpeg = await loop.run_in_executor(None, grab_jpeg, d["camera_url"])
         if jpeg:
             await client.publish(_camera_topic(pid), jpeg)
@@ -444,6 +458,7 @@ class _Sent:
 
 
 _published: dict = {}       # printer_id -> _Sent (what the topic holds right now)
+_camera_last_sent: dict = {}  # printer_id -> monotonic ts of the last snapshot round (idle cadence gate)
 _discovered: dict = {}      # printer_id -> discovery topics announced (what the off-clear must empty)
 _announced_online = False   # the availability "online" payload is on the broker, clear it on stop
 _client = None              # the live aiomqtt client, set while connected
@@ -493,6 +508,31 @@ async def on_status(payload: dict) -> None:
     if changed and (any(k in _IMMEDIATE for k in changed)
                     or time.monotonic() - sent.ts >= NUMERIC_THROTTLE_S):
         await _publish_state(pid, fresh)
+        if any(k in _IMMEDIATE for k in changed):
+            # A state event is exactly when the picture changes (print start,
+            # pause, finish): push a frame now, not one cadence behind.
+            _schedule_frame_now(pid, d)
+
+
+_frame_tasks: set = set()   # strong refs: a GC'd task is a silently dropped frame
+
+
+def _schedule_frame_now(pid: str, d: dict) -> None:
+    """Fire-and-forget the grab: on_status runs in the bus dispatcher, and an
+    executor grab (~5 s worst case) must not delay the other subscribers."""
+    if _client is None or not d.get("connected") or not d.get("camera_url"):
+        return
+    t = asyncio.create_task(_push_frame_now(pid, d))
+    _frame_tasks.add(t)
+    t.add_done_callback(_frame_tasks.discard)
+
+
+async def _push_frame_now(pid: str, d: dict) -> None:
+    jpeg = await asyncio.get_running_loop().run_in_executor(
+        None, grab_jpeg, d["camera_url"])
+    if jpeg and _client is not None:
+        await _client.publish(_camera_topic(pid), jpeg)
+    _camera_last_sent[pid] = time.monotonic()   # the cadence restarts from this frame
 
 
 async def _publish_state(pid: str, fresh: dict) -> None:
@@ -547,6 +587,7 @@ async def _clear_records():
               f"({type(e).__name__}: {e}) — retrying")
         return
     _discovered.clear()
+    _camera_last_sent.clear()
     _published.clear()
     _announced_online = False
     _ledger_broker = None
