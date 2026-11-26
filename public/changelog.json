@@ -1,5 +1,12 @@
 [
   {
+    "version": "2.4.0-beta.13",
+    "date": "2026-11-26",
+    "changes": [
+      "The Home Assistant camera no longer shows a broken image on an idle printer: it now receives a frame as soon as the bridge connects (and roughly every minute while idle), plus an immediate frame on every state event — print start, pause, finish — so the picture is fresh exactly when the state changes"
+    ]
+  },
+  {
     "version": "2.3.9",
     "date": "2026-11-26",
     "changes": [
