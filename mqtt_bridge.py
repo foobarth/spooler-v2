@@ -246,19 +246,28 @@ async def _camera_tick(client, wanted) -> None:
         if _desired_params() != wanted:
             return
         d = _printer_dict(pr)
-        if not d.get("connected") or not d.get("camera_url"):
+        gate = (bool(d.get("connected")), bool(d.get("camera_url")))
+        if _camera_gate_logged.get(pid) != gate:
+            _camera_gate_logged[pid] = gate
+            print(f"[Bridge camera] {pid}: feeder gate connected={gate[0]} "
+                  f"camera_url={gate[1]} state={d.get('state')}")
+        if not gate[0] or not gate[1]:
             _camera_last_sent.pop(pid, None)
             continue
-        interval = CAMERA_INTERVAL_S if d.get("state") in ("printing", "paused") \
-            else IDLE_CAMERA_INTERVAL_S
+        printing = d.get("state") in ("printing", "paused")
+        interval = CAMERA_INTERVAL_S if printing else IDLE_CAMERA_INTERVAL_S
         if now - _camera_last_sent.get(pid, 0.0) < interval:
             continue
         # A failed grab consumes the slot too: a cold or broken camera is
         # retried at the cadence, not hammered every tick.
         _camera_last_sent[pid] = now
+        print(f"[Bridge camera] {pid}: grab ({'printing' if printing else 'idle'} cadence)")
         jpeg = await loop.run_in_executor(None, grab_jpeg, d["camera_url"])
         if jpeg:
             await client.publish(_camera_topic(pid), jpeg)
+            print(f"[Bridge camera] {pid}: published {len(jpeg)} B")
+        else:
+            print(f"[Bridge camera] {pid}: grab returned nothing")
 
 
 def _printer_dict(pr):
@@ -459,6 +468,7 @@ class _Sent:
 
 _published: dict = {}       # printer_id -> _Sent (what the topic holds right now)
 _camera_last_sent: dict = {}  # printer_id -> monotonic ts of the last snapshot round (idle cadence gate)
+_camera_gate_logged: dict = {}  # printer_id -> last logged (connected, camera_url) gate state
 _discovered: dict = {}      # printer_id -> discovery topics announced (what the off-clear must empty)
 _announced_online = False   # the availability "online" payload is on the broker, clear it on stop
 _client = None              # the live aiomqtt client, set while connected
@@ -532,6 +542,7 @@ async def _push_frame_now(pid: str, d: dict) -> None:
         None, grab_jpeg, d["camera_url"])
     if jpeg and _client is not None:
         await _client.publish(_camera_topic(pid), jpeg)
+        print(f"[Bridge camera] {pid}: published {len(jpeg)} B (state event)")
     _camera_last_sent[pid] = time.monotonic()   # the cadence restarts from this frame
 
 
@@ -588,6 +599,7 @@ async def _clear_records():
         return
     _discovered.clear()
     _camera_last_sent.clear()
+    _camera_gate_logged.clear()
     _published.clear()
     _announced_online = False
     _ledger_broker = None

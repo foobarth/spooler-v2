@@ -26,6 +26,7 @@ async def broker(monkeypatch):
     monkeypatch.setattr(mqtt_bridge, "_published", {})
     monkeypatch.setattr(mqtt_bridge, "_discovered", {})
     monkeypatch.setattr(mqtt_bridge, "_camera_last_sent", {})
+    monkeypatch.setattr(mqtt_bridge, "_camera_gate_logged", {})
     monkeypatch.setattr(mqtt_bridge, "_announced_online", False)
     monkeypatch.setattr(mqtt_bridge, "_ledger_broker", None)
     monkeypatch.setattr(mqtt_bridge, "_client", None)
