@@ -9,10 +9,13 @@ bridge, future channels — reads these keys and owns no protocol logic.
 from printers.base import PrinterConnection
 
 
+# Real CC1 SDCP shape: no top-level SpeedFactor exists — the CC1 reports its
+# speed as PrintSpeedPct inside PrintInfo (the card reads the same field).
 CC1_STATUS = {"TempOfNozzle": 210, "TempTargetNozzle": 215, "TempOfHotbed": 60,
-              "TempTargetHotbed": 65, "TempOfBox": 30, "SpeedFactor": 95,
+              "TempTargetHotbed": 65, "TempOfBox": 30,
               "PrintInfo": {"Status": 3, "CurrentLayer": 12, "TotalLayer": 100,
-                            "PrintTime": 120, "RemainTime": 300}}
+                            "PrintTime": 120, "RemainTime": 300,
+                            "PrintSpeedPct": 95}}
 
 
 def _p(status, **attrs):
@@ -40,6 +43,18 @@ def test_canonical_keys_read_cc2_names():
             d["bed_target"], d["chamber_temp"]) == (1, 2, 3, 4, 5)
 
 
+def test_speed_factor_reads_the_cc1_print_speed_pct():
+    # Review reproduction: a CC1 printing at 160 % must not report 100 —
+    # SpeedFactor belongs to CC2/Moonraker/PrusaLink, PrintSpeedPct to CC1.
+    d = _p({"PrintInfo": {"Status": 3, "PrintSpeedPct": 160}}).to_dict()
+    assert d["speed_factor"] == 160
+
+
+def test_speed_factor_still_reads_cc2_speedfactor():
+    d = _p({"SpeedFactor": 130}).to_dict()
+    assert d["speed_factor"] == 130
+
+
 def test_progress_prefers_printer_percentage():
     # TotalTicks == 100 means CurrentTicks IS the percentage (CC2/Moonraker/
     # PrusaLink); it beats layers, which understate progress (issue #56).
@@ -52,6 +67,14 @@ def test_progress_from_layers_when_no_percentage():
     d = _p({"PrintInfo": {"TotalTicks": 700, "CurrentTicks": 40,
                           "TotalLayer": 100, "CurrentLayer": 25}}).to_dict()
     assert d["progress"] == 25
+
+
+def test_progress_at_layer_zero_matches_the_card():
+    # getProgress() uses layers as soon as TotalLayer > 0, so layer 0 of 200
+    # is 0 % — it must not fall through to the tick fraction.
+    d = _p({"PrintInfo": {"TotalLayer": 200, "CurrentLayer": 0,
+                          "TotalTicks": 700, "CurrentTicks": 7}}).to_dict()
+    assert d["progress"] == 0
 
 
 def test_progress_none_when_unknown():
@@ -145,3 +168,15 @@ def test_canvas_skips_malformed_tray_entries():
 def test_canvas_without_trays_is_none():
     ci = {"active_tray_id": -1, "canvas_list": [{"canvas_id": 0, "tray_list": []}]}
     assert _p({"canvas_info": ci}).to_dict()["canvas"] is None
+
+
+def test_offline_temps_read_zero_like_the_card():
+    # An offline printer's last readings are history, not a measurement —
+    # the card shows "--" (app-render.js zeroes when !connected); the
+    # canonical keys must not hand a consumer stale values instead.
+    p = _p(CC1_STATUS)
+    p.connected = False
+    d = p.to_dict()
+    assert d["nozzle_temp"] == 0 and d["nozzle_target"] == 0
+    assert d["bed_temp"] == 0 and d["bed_target"] == 0
+    assert d["chamber_temp"] == 0 and d["chamber_target"] == 0
