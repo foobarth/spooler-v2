@@ -1,5 +1,12 @@
 [
   {
+    "version": "2.4.0-beta.9",
+    "date": "2026-11-26",
+    "changes": [
+      "The bridge rebuilt on the canonical-state architecture that just landed upstream (#70): printer state is normalized once in to_dict() — protocol key differences (CC1 vs CC2/Prusa/Moonraker temp names, progress rules, CC1's PrintSpeedPct) end there, and the bridge projects it onto MQTT/HA discovery as a pure projection. An offline printer's temperatures read 0 (history, not a reading) everywhere, including HA"
+    ]
+  },
+  {
     "version": "2.3.9",
     "date": "2026-11-26",
     "changes": [
