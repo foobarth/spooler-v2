@@ -1,5 +1,12 @@
 [
   {
+    "version": "2.4.0-beta.7",
+    "date": "2026-11-26",
+    "changes": [
+      "Fix: the realtime camera worked in Spooler but never showed up in Home Assistant — the still-image URL HA fetches first was answered by the print-history handler, which can only serve finished-print pictures, so HA's camera got a 404 and reported errors instead of a picture. The token-protected snapshot URL now serves a live frame of the printer's camera, and a failing camera stream is answered with a clear 503 instead of a dropped connection"
+    ]
+  },
+  {
     "version": "2.4.0-beta.6",
     "date": "2026-11-25",
     "changes": [
