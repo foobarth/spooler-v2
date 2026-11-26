@@ -793,6 +793,18 @@ class CC2Connection(PrinterConnection):
             "config":        config,
         })
 
+    def _reset_per_print_extrusion(self) -> None:
+        """A new print starts at the base level (the accounting is created).
+        Mirror the reset _apply_cc2_status does on a state:"printing"
+        transition — a print whose pre-heat is cancelled never gets there,
+        and the previous print's figure would otherwise be debited to it."""
+        self._filament_mm_max         = 0.0
+        self._extruder_offset         = 0.0
+        self._last_extruder           = 0.0
+        self._expected_filament_g     = 0.0
+        self._expected_print_time_s   = 0
+        self._last_active_filament_mm = 0.0
+
     def _apply_cc2_status(self) -> None:
         s     = self._cc2_state
         ps    = s.get("print_status", {})
@@ -869,7 +881,15 @@ class CC2Connection(PrinterConnection):
 
         if state_str not in ("printing", "paused"):
             self._extruded_this_print = False
-        if sub_status in _SUB_TRANSIENT:
+
+        # Terminal states win over transient sub_status: the firmware sets
+        # sub_status 2077 (task completed) / 2504 (error) in the same step as
+        # the state string (elegoo_printer DeviceStatus::update_base_status),
+        # so a transient from a neighbouring frame must not mask a terminal
+        # state that arrived with it.
+        if state_str in ("complete", "cancelled", "error"):
+            status_code = _STATE_STR[state_str]
+        elif sub_status in _SUB_TRANSIENT:
             status_code = _SUB_TRANSIENT[sub_status]
         elif state_str in _STATE_STR:
             status_code = _STATE_STR[state_str]

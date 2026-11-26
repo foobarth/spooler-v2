@@ -315,6 +315,8 @@ class SPHandler(ExternalRoutesMixin, ProxyMixin, AdminMixin, SimpleHTTPRequestHa
         except Exception as e:
             self._json({"error": str(e)}, 500)
             return
+        # Anyone signed in with the old password elsewhere is signed out; this session stays.
+        auth.sign_out_other_sessions(username, _parse_sid(self.headers.get("Cookie", "")))
         self._json({"ok": True})
         print(f"[Auth] Password changed for user '{username}'")
 
@@ -371,28 +373,6 @@ class SPHandler(ExternalRoutesMixin, ProxyMixin, AdminMixin, SimpleHTTPRequestHa
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             self.wfile.write(body)
-            return
-        # Spoolman — either proxy through our server or redirect directly to it
-        if self.path in ("/spoolman", "/spoolman/"):
-            if proxy_spoolman_enabled():
-                if self.path == "/spoolman":
-                    self.send_response(302)
-                    self.send_header("Location", "/spoolman/")
-                    self.end_headers()
-                else:
-                    self._proxy_spoolman_ui("GET", "/")
-            else:
-                self.send_response(302)
-                self.send_header("Location", get_spoolman_url() + "/")
-                self.end_headers()
-            return
-        if proxy_spoolman_enabled() and self.path.startswith("/spoolman/"):
-            sm_path = self.path[len("/spoolman"):]
-            self._proxy_spoolman_ui("GET", sm_path or "/")
-            return
-        # Spoolman's own JS calls /api/v1/ directly — only proxy when enabled
-        if proxy_spoolman_enabled() and self.path.startswith("/api/v1/"):
-            self._proxy_spoolman_ui("GET", self.path)
             return
         if self.path == "/api/auth-status":
             resp = {"setup_required": not users.any_users()}
@@ -466,6 +446,31 @@ class SPHandler(ExternalRoutesMixin, ProxyMixin, AdminMixin, SimpleHTTPRequestHa
             return
 
         if not self._check_auth():
+            return
+
+        # Spoolman — either proxy through our server or redirect directly to it.
+        # After the login check: Spoolman has no login of its own, so through the
+        # proxy it is only as private as Spooler is.
+        if self.path in ("/spoolman", "/spoolman/"):
+            if proxy_spoolman_enabled():
+                if self.path == "/spoolman":
+                    self.send_response(302)
+                    self.send_header("Location", "/spoolman/")
+                    self.end_headers()
+                else:
+                    self._proxy_spoolman_ui("GET", "/")
+            else:
+                self.send_response(302)
+                self.send_header("Location", get_spoolman_url() + "/")
+                self.end_headers()
+            return
+        if proxy_spoolman_enabled() and self.path.startswith("/spoolman/"):
+            sm_path = self.path[len("/spoolman"):]
+            self._proxy_spoolman_ui("GET", sm_path or "/")
+            return
+        # Spoolman's own JS calls /api/v1/ directly — only proxy when enabled
+        if proxy_spoolman_enabled() and self.path.startswith("/api/v1/"):
+            self._proxy_spoolman_ui("GET", self.path)
             return
 
         if self.path == "/api/my-notifications":
@@ -569,14 +574,19 @@ class SPHandler(ExternalRoutesMixin, ProxyMixin, AdminMixin, SimpleHTTPRequestHa
             materials = [{"name": m, "density": mat_map[m]} for m in sorted(mat_map)]
             self._json({"brands": brands, "materials": materials})
         elif self.path == "/api/backup" or self.path.startswith("/api/backup?"):
-            self._handle_backup_download()
+            # A backup holds printer access codes, password hashes and the push key.
+            if self._require("backup.manage"):
+                self._handle_backup_download()
         elif self.path == "/api/backups":
+            if not self._require("backup.manage"):
+                return
             if not is_enabled("backup"):
                 self._json({"error": "feature_disabled", "feature": "backup"}, 403)
                 return
             self._json(list_auto_backups())
         elif self.path.startswith("/api/backups/"):
-            self._handle_backup_file_download()
+            if self._require("backup.manage"):
+                self._handle_backup_file_download()
         elif self.path.startswith("/api/spoolman"):
             self._proxy_spoolman("GET", self.path[len("/api/spoolman"):], None)
         elif (
@@ -775,7 +785,7 @@ class SPHandler(ExternalRoutesMixin, ProxyMixin, AdminMixin, SimpleHTTPRequestHa
         elif self.path == "/api/restore":
             if self._require("backup.manage"):
                 self._handle_restore()
-        elif self.path.startswith("/api/v1/"):
+        elif proxy_spoolman_enabled() and self.path.startswith("/api/v1/"):
             self._proxy_spoolman_ui("POST", self.path, self._read_body())
         elif self.path.startswith("/api/spoolman"):
             self._proxy_spoolman("POST", self.path[len("/api/spoolman"):], self._read_body())
