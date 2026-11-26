@@ -29,7 +29,12 @@ class ProxyMixin:
         # (see camera_hub.py); each viewer gets its own multipart framing.
         sub = camera_hub.hubs.subscribe(p.camera_url)
         try:
-            first = sub.next(timeout=10)
+            try:
+                first = sub.next(timeout=10)
+            except Exception as e:
+                print(f"[Camera] {p.name}: could not start the camera stream ({type(e).__name__}: {e})")
+                self._json({"error": "camera unavailable"}, 503)   # before headers: still answerable
+                return
             if first is None:
                 print(f"[Camera] {p.name}: the printer's camera gave no picture")
                 self._json({"error": "camera returned no picture"}, 503)
@@ -47,9 +52,32 @@ class ProxyMixin:
         except (ConnectionResetError, BrokenPipeError):
             pass    # the browser closed the picture
         except Exception as e:
+            # headers are already out — nothing better to answer with; log it
             print(f"[Camera] {p.name}: could not serve the camera ({type(e).__name__}: {e})")
         finally:
             sub.close()
+
+    @requires_feature("camera")
+    def _camera_still(self, printer_id: str):
+        """One JPEG frame of a printer's camera — the still_image_url the
+        external camera token grants (Home Assistant fetches this before
+        opening the stream). The frame comes from the printer's shared
+        camera connection; a cold camera gets up to 5 s to deliver one."""
+        p = state.printers.get(printer_id)
+        if not p or not p.camera_url:
+            print(f"[Camera] {p.name if p else printer_id}: no camera address known (yet)")
+            self._json({"error": "Camera not available"}, 404)
+            return
+        jpeg = camera_hub.hubs.picture(p.camera_url, timeout=5)
+        if not jpeg:
+            self._json({"error": "camera returned no picture"}, 503)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(jpeg)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(jpeg)
 
     @requires_feature("camera")
     def _proxy_thumbnail(self):
