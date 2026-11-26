@@ -1,5 +1,12 @@
 [
   {
+    "version": "2.4.0-beta.15",
+    "date": "2026-11-26",
+    "changes": [
+      "The Home Assistant camera keeps its latest frame retained on the broker: re-enabling the feature, restarting Home Assistant or reloading the entity now shows the picture immediately instead of a broken image for up to a minute. The frame's lifetime is exactly the stream's — it is cleared when the printer goes offline and when the bridge is switched off (off still empties everything)"
+    ]
+  },
+  {
     "version": "2.3.9",
     "date": "2026-11-26",
     "changes": [
