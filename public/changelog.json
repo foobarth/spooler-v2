@@ -1,5 +1,12 @@
 [
   {
+    "version": "2.4.0-beta.12",
+    "date": "2026-11-26",
+    "changes": [
+      "The livestream URL copy button from beta.11 is removed — the discovered MQTT snapshot camera is the camera for now; the streaming story (URL placement, auth for enabled deployments) is deferred"
+    ]
+  },
+  {
     "version": "2.3.9",
     "date": "2026-11-26",
     "changes": [
