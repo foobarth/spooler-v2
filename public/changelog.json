@@ -1,5 +1,12 @@
 [
   {
+    "version": "2.4.0-beta.8",
+    "date": "2026-11-26",
+    "changes": [
+      "The bridge's whole lifecycle now runs as one serialized owner task: every feature-flag or broker-URL change (and startup) just pokes it, and it reconciles by itself — connect, move brokers (empty the old one, announce on the new), or switch off and empty every retained payload. Switching off now empties the broker the payloads were actually published to even when the broker address was changed or cleared in the same moment, and a switch-off while the broker is down retries by itself instead of waiting for the next toggle"
+    ]
+  },
+  {
     "version": "2.4.0-beta.7",
     "date": "2026-11-26",
     "changes": [
