@@ -58,28 +58,6 @@ class ProxyMixin:
             sub.close()
 
     @requires_feature("camera")
-    def _camera_still(self, printer_id: str):
-        """One JPEG frame of a printer's camera — the still_image_url the
-        external camera token grants (Home Assistant fetches this before
-        opening the stream). The frame comes from the printer's shared
-        camera connection; a cold camera gets up to 5 s to deliver one."""
-        p = state.printers.get(printer_id)
-        if not p or not p.camera_url:
-            print(f"[Camera] {p.name if p else printer_id}: no camera address known (yet)")
-            self._json({"error": "Camera not available"}, 404)
-            return
-        jpeg = camera_hub.hubs.picture(p.camera_url, timeout=5)
-        if not jpeg:
-            self._json({"error": "camera returned no picture"}, 503)
-            return
-        self.send_response(200)
-        self.send_header("Content-Type", "image/jpeg")
-        self.send_header("Content-Length", str(len(jpeg)))
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        self.wfile.write(jpeg)
-
-    @requires_feature("camera")
     def _proxy_thumbnail(self):
         rest = self.path[len("/api/thumbnail/"):]
         parts = rest.split("/", 1)

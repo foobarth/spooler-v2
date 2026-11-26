@@ -89,14 +89,6 @@ FIELDS: dict = {
     "telegram.thread_id": Field(key="telegram.thread_id", label="Telegram topic number (optional, for groups with topics)", type="text", default=""),
     "discord.webhook": Field(key="discord.webhook", label="Discord webhook address", type="secret", default=""),
     "webhook.url": Field(key="webhook.url", label="Webhook address", type="secret", default=""),
-    "camera.external_url": Field(
-        key="camera.external_url", label="Spooler address as Home Assistant sees it (optional, for the realtime camera)", type="url", default="",
-        schemes=("http", "https"), env="CAMERA_EXTERNAL_URL",
-    ),
-    "camera.external_token": Field(
-        key="camera.external_token", label="Camera token for the external image URLs", type="secret",
-        default="", env="CAMERA_EXTERNAL_TOKEN",
-    ),
     "mqtt.url": Field(
         key="mqtt.url", label="MQTT broker address (Home Assistant bridge)", type="url",
         env="MQTT_URL", default="", schemes=("mqtt",),

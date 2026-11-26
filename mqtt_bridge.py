@@ -82,46 +82,6 @@ def _camera_topic(pid: str) -> str:
     return f"spooler/{pid}/camera/frame"
 
 
-def _yaml_topic(pid: str) -> str:
-    return f"spooler/{pid}/camera/mjpeg_yaml"
-
-
-def _camera_yaml(pid: str, name: str) -> str | None:
-    """Paste-ready Home Assistant YAML for the realtime MJPEG camera — only
-    when the user told us the address HA can reach and a token exists; the
-    bridge never invents a hostname."""
-    base = (config.get("camera.external_url") or "").rstrip("/")
-    token = config.get("camera.external_token")
-    if not base or not token:
-        return None
-    return (
-        f"# Home Assistant: realtime camera of the Spooler printer {name}\n"
-        "camera:\n"
-        "  - platform: mjpeg\n"
-        f"    name: \"{name}\"\n"
-        f"    still_image_url: {base}/api/snapshot/{pid}?token={token}\n"
-        f"    mjpeg_url: {base}/api/camera/{pid}?token={token}\n"
-    )
-
-
-async def _publish_camera_yaml(pid: str, d: dict) -> None:
-    """Keep `spooler/<pid>/camera/mjpeg_yaml` in step with the config: publish
-    when it changes, publish an empty retained payload when it goes away."""
-    yaml = _camera_yaml(pid, d.get("name") or pid) if d.get("camera_url") else None
-    if yaml == _published_yaml.get(pid):
-        return
-    if yaml is None and pid not in _published_yaml:
-        return
-    await _client.publish(_yaml_topic(pid), (yaml or "").encode(), retain=True)
-    if yaml is None:
-        _published_yaml.pop(pid, None)
-        return
-    _published_yaml[pid] = yaml
-    known = _discovered.setdefault(pid, [])
-    if _yaml_topic(pid) not in known:
-        known.append(_yaml_topic(pid))
-
-
 def _discovery_topic(component: str, pid: str, key: str) -> str:
     # HA's discovery grammar is homeassistant/<component>/[<node_id>/]<object_id>/config
     # — node_id = the printer, object_id = the entity. One level more (an extra
@@ -315,7 +275,7 @@ _ledger_broker: tuple | None = None
 
 
 def _ledger_outstanding() -> bool:
-    return bool(_discovered or _published or _published_yaml or _announced_online)
+    return bool(_discovered or _published or _announced_online)
 
 
 def _desired_params():
@@ -485,7 +445,6 @@ class _Sent:
 
 _published: dict = {}       # printer_id -> _Sent (what the topic holds right now)
 _discovered: dict = {}      # printer_id -> discovery topics announced (what the off-clear must empty)
-_published_yaml: dict = {}  # printer_id -> mjpeg YAML currently retained (or absent = nothing out)
 _announced_online = False   # the availability "online" payload is on the broker, clear it on stop
 _client = None              # the live aiomqtt client, set while connected
 
@@ -519,7 +478,6 @@ async def on_status(payload: dict) -> None:
     if not pid or not d or _client is None:
         return
     fresh = bridge_state(d)
-    await _publish_camera_yaml(pid, d)
     # A printer gained discoverable extras since the last announce (canvas
     # trays from the 30 s poll, a camera that appeared): announce what is
     # missing and publish the state right away — the new entities should
@@ -552,7 +510,6 @@ async def _announce(client) -> None:
     for pid, pr in list(state.printers.items()):
         d = _printer_dict(pr)
         await _publish_discovery(pid, _discovery_messages(pid, d))
-        await _publish_camera_yaml(pid, d)
         fresh = bridge_state(d)
         await client.publish(_state_topic(pid), json.dumps(fresh), retain=True)
         sent = _published.setdefault(pid, _Sent())
@@ -591,6 +548,5 @@ async def _clear_records():
         return
     _discovered.clear()
     _published.clear()
-    _published_yaml.clear()
     _announced_online = False
     _ledger_broker = None
