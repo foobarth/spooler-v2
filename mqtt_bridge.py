@@ -476,7 +476,7 @@ class _Sent:
 _published: dict = {}       # printer_id -> _Sent (what the topic holds right now)
 _camera_last_sent: dict = {}  # printer_id -> monotonic ts of the last snapshot round (idle cadence gate)
 _camera_gate_logged: dict = {}  # printer_id -> last logged (connected, camera_url) gate state
-_camera_frame_out: set = {}   # printer_ids with a retained frame on the broker — the off-clear must empty these
+_camera_frame_out: set = set()   # printer_ids with a retained frame on the broker — the off-clear must empty these
 _discovered: dict = {}      # printer_id -> discovery topics announced (what the off-clear must empty)
 _announced_online = False   # the availability "online" payload is on the broker, clear it on stop
 _client = None              # the live aiomqtt client, set while connected
