@@ -283,7 +283,12 @@ async def _camera_tick(client, wanted) -> None:
             continue
         printing = d.get("state") in ("printing", "paused")
         interval = CAMERA_INTERVAL_S if printing else IDLE_CAMERA_INTERVAL_S
-        if now - _camera_last_sent.get(pid, 0.0) < interval:
+        # "never grabbed yet" means DUE NOW: time.monotonic() counts from host
+        # boot, and a freshly booted print server (or an ephemeral CI VM) can
+        # be younger than the idle cadence — a 0.0 sentinel would leave the
+        # camera dark until host uptime exceeds the interval.
+        last = _camera_last_sent.get(pid)
+        if last is not None and now - last < interval:
             continue
         # A failed grab consumes the slot too: a cold or broken camera is
         # retried at the cadence, not hammered every tick.

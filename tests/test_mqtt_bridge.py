@@ -731,3 +731,20 @@ def test_discovery_config_is_ha_quality():
     assert payloads["sensor/firmware_version"]["icon"] == "mdi:chip"
     assert payloads["binary_sensor/connected"]["device_class"] == "connectivity"
     assert payloads["binary_sensor/printing"]["icon"] == "mdi:printer-3d"
+
+
+async def test_camera_first_grab_is_due_on_a_fresh_boot(broker, monkeypatch):
+    # time.monotonic() counts from HOST boot: a freshly booted print server
+    # can be younger than the idle cadence, and the first grab must still be
+    # due (CI runners are ephemeral VMs — this flaked exactly there).
+    import mqtt_bridge as mb
+    import types
+    monkeypatch.setattr(mb, "time", types.SimpleNamespace(monotonic=lambda: 30.0))
+    monkeypatch.setattr(mb, "CAMERA_INTERVAL_S", 60.0)
+    monkeypatch.setattr(mb, "IDLE_CAMERA_INTERVAL_S", 60.0)
+    monkeypatch.setattr(mb, "grab_jpeg", lambda url, timeout=5.0: b"jpeg")
+    pr = _register_printer(monkeypatch)
+    pr.connected = True
+    pr.camera_url = "http://192.0.2.5:8080/mjpeg"
+    await mqtt_bridge.sync_lifecycle()
+    await asyncio.wait_for(_first_camera_frame(broker), 10.0)
