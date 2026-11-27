@@ -698,16 +698,18 @@ class PrinterConnection:
         back off itself afterward if auto-light wouldn't otherwise do that
         (auto-light is off, or this printer doesn't normally manage the light
         at print end at all)."""
-        we_turned_it_on = False
+        we_tried_the_light = False
         try:
             if not is_enabled("print_snapshot") or not is_enabled("camera"):
                 return
             await asyncio.sleep(PRINT_PICTURE_DELAY_S)
             if self.supports_light and self.connected and self._light_state() is False:
+                we_tried_the_light = True
                 try:
                     await self.set_light(True)
-                    we_turned_it_on = True
                 except Exception as e:
+                    # the command may still have reached the printer (a timeout
+                    # raises after the wire) — the finally's light-off must run
                     print(f"[Printer {self.name}] Could not turn the light on for the picture: {type(e).__name__}")
             jpeg = await self._camera_picture(force=True)
             if not jpeg:
@@ -722,7 +724,7 @@ class PrinterConnection:
         except Exception as e:
             print(f"[Printer {self.name}] Print picture skipped: {type(e).__name__}")
         finally:
-            if we_turned_it_on:
+            if we_tried_the_light:
                 try:
                     await self.set_light(False)
                 except Exception as e:
@@ -1077,8 +1079,10 @@ class PrinterConnection:
             await self._queue_print_ended(cur_status)
             # The print may have ended while still paused (rare — most
             # protocols resume before stopping — but cheap to guard against
-            # leaving a pause segment with no "until").
-            if self.state_reason is not None and self.state_reason["kind"] == "pause":
+            # leaving a pause segment with no "until"). The reason by now may
+            # be the stop reason (cancel-while-paused replaces it), so the
+            # condition is an OPEN SEGMENT, not the reason's kind.
+            if any(p["until"] is None for p in self._current_print_pauses):
                 self._finish_current_pause()
             reason = self.state_reason  # kept as-is on the live printer; only copied into history
             # The accounting knows the true total even if the printer's counter

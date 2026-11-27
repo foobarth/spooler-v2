@@ -592,3 +592,35 @@ async def test_a_stopped_print_does_not_take_the_printers_closing_estimate(make_
     status(p, 14, 42000, tray=1); await p._check_print_transition()    # stopped; closing figure = whole-file estimate
     assert persistence.load_history()[0]["filament_mm"] == 600
     assert sum(e["mm"] for e in ledger.all_entries()) == 600
+
+
+@pytest.mark.asyncio
+async def test_no_spool_assigned_to_a_trayless_printer_is_discarded_with_the_reason(make_printer, monkeypatch):
+    """A trayless printer (Prusa/Moonraker) whose Spoolman assignment is gone:
+    the deduction must not silently land on 'unknown spool, pending' — it is
+    discarded with the readable reason, like an unlinked tray slot."""
+    monkeypatch.setattr(base, "last_spool_info", lambda pid: {"status": "none"})
+    p = make_printer()
+    p.status = {"PrintInfo": {"Status": 0, "TotalExtrusion": 0, "Filename": "a.gcode"}}
+    await p._check_print_transition()
+    p.status = {"PrintInfo": {"Status": 13, "TotalExtrusion": 0, "Filename": "a.gcode"}}
+    await p._check_print_transition()
+    p.status = {"PrintInfo": {"Status": 9, "TotalExtrusion": 4000, "Filename": "a.gcode"}}
+    await p._check_print_transition()
+    [e] = ledger.all_entries()
+    assert e["spool_id"] is None
+    assert e["status"] == "discarded"
+    assert "No spool is assigned to this printer" in (e.get("reason") or e.get("last_error") or "")
+
+
+async def test_a_tiny_deduction_with_no_density_is_skipped_not_queued(make_printer, monkeypatch):
+    """grams <= 0 (no density known): nothing is queued, nothing is kicked."""
+    monkeypatch.setattr(base, "get_spool_density", lambda pid: 0.0)
+    p = make_printer()
+    p.status = {"PrintInfo": {"Status": 0, "TotalExtrusion": 0, "Filename": "a.gcode"}}
+    await p._check_print_transition()
+    p.status = {"PrintInfo": {"Status": 13, "TotalExtrusion": 0, "Filename": "a.gcode"}}
+    await p._check_print_transition()
+    p.status = {"PrintInfo": {"Status": 9, "TotalExtrusion": 4000, "Filename": "a.gcode"}}
+    await p._check_print_transition()
+    assert ledger.all_entries() == []

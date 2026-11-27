@@ -222,3 +222,59 @@ async def test_save_print_picture_waits_then_grabs_a_fresh_frame_ignoring_the_ca
 
     assert slept == [0.01]
     assert persistence.snapshot_path(i).read_bytes() == b"after the delay, shows the model"
+
+
+@pytest.mark.asyncio
+async def test_a_broken_light_does_not_cost_the_picture(printer, monkeypatch, capsys):
+    """The light is a courtesy: if it refuses to switch, the picture is still
+    taken (and the failure logged), and the light-off in the finally is
+    equally non-fatal."""
+    monkeypatch.setattr(base, "grab_jpeg", lambda url: JPEG)
+    turns = []
+
+    async def broken_light(on):
+        turns.append(on)
+        raise RuntimeError("light bus wedged")
+
+    p = printer
+    p.supports_light = True
+    p.auto_light = True
+    p.status = {"LightStatus": {"SecondLight": False}}       # light reported off → turn on
+    p.set_light = broken_light
+    i = _id()
+    persistence.append_history({"id": i})
+
+    await p._save_print_picture(i)
+
+    assert turns == [True, False]                            # both attempts were made
+    assert persistence.snapshot_path(i).read_bytes() == JPEG # picture saved anyway
+    out = capsys.readouterr().out
+    assert "Could not turn the light on" in out
+    assert "Could not turn the light back off" in out
+
+
+@pytest.mark.asyncio
+async def test_an_empty_grab_leaves_the_history_entry_without_a_snapshot(printer, monkeypatch):
+    monkeypatch.setattr(base, "grab_jpeg", lambda url: None)
+    i = _id()
+    persistence.append_history({"id": i})
+
+    await printer._save_print_picture(i)
+
+    assert persistence.snapshot_path(i) is None or not persistence.snapshot_path(i).exists()
+
+
+@pytest.mark.asyncio
+async def test_a_camera_failure_is_contained_and_logged(printer, monkeypatch, capsys):
+    """The end-of-print choreography must never take the print cycle down:
+    a grab that explodes is logged, nothing else breaks."""
+    async def broken_picture(force=False, max_age_s=None):
+        raise RuntimeError("camera http 500")
+
+    printer._camera_picture = broken_picture
+    i = _id()
+    persistence.append_history({"id": i})
+
+    await printer._save_print_picture(i)
+
+    assert "Print picture skipped" in capsys.readouterr().out

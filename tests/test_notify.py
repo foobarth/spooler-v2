@@ -643,3 +643,123 @@ async def test_subscriber_skips_events_switched_off(wired_and_notifying):
     features.set_enabled("notifications", True)     # event itself stays off
     await state.publish_now("print_started", printer_id="p1", data={})
     assert wired_and_notifying == []
+
+
+# ── nozzle overheat: once per print, re-armed by cooling ─────────────────────
+
+def _overheat_printer():
+    push.save_notif_settings({"nozzle_printing": {"enabled": True, "threshold": 260}})
+    p = PrinterConnection("pid1", "10.0.0.5", "Bench")
+    p.emitted = []
+    _record_events(p)
+
+    def at(status, nozzle):
+        p.status = {"PrintInfo": {"Status": status}, "TempOfNozzle": nozzle}
+        p._check_notifications()
+    return p, at
+
+
+def test_nozzle_overheat_fires_once_while_hot_and_rearms_after_cooling():
+    p, at = _overheat_printer()
+    at(3, 270)                       # printing, over the threshold: fires
+    at(3, 280)                       # still hot: no repeat
+    assert p.emitted.count("nozzle_overheat") == 1
+    at(3, 250)                       # cooled below: re-arms
+    at(3, 265)
+    assert p.emitted.count("nozzle_overheat") == 2
+
+
+def test_nozzle_overheat_resets_when_the_printer_stops_printing():
+    p, at = _overheat_printer()
+    at(3, 270)
+    assert p.emitted.count("nozzle_overheat") == 1
+    at(0, 270)                       # idle and still hot: no overheat event…
+    at(3, 270)                       # …but the guard is re-armed for the next print
+    assert p.emitted.count("nozzle_overheat") == 2
+
+
+def test_nozzle_overheat_is_silent_when_the_setting_is_off():
+    push.save_notif_settings({"nozzle_printing": {"enabled": False}})
+    p = PrinterConnection("pid1", "10.0.0.5", "Bench")
+    p.emitted = []
+    _record_events(p)
+    p.status = {"PrintInfo": {"Status": 3}, "TempOfNozzle": 270}
+    p._check_notifications()
+    p.status = {"PrintInfo": {"Status": 3}, "TempOfNozzle": 280}
+    p._check_notifications()
+    assert p.emitted.count("nozzle_overheat") == 0
+
+
+# ── cancelled: the filename rides along, fires once per print ────────────────
+
+def test_print_cancelled_carries_the_filename_and_fires_once():
+    push.save_notif_settings({"finished": {"enabled": True}})
+    p = PrinterConnection("pid1", "10.0.0.5", "Bench")
+    p.emitted = []
+    _record_events(p)
+
+    def at(status):
+        p.status = {"PrintInfo": {"Status": status, "Filename": "benchy.gcode"}}
+        p._check_notifications()
+    at(0)
+    at(3)                            # printing
+    at(8)                            # cancelled
+    assert p.emitted.count("print_cancelled") == 1
+    at(0)
+    at(0)
+    assert p.emitted.count("print_cancelled") == 1, "once per print, not on later idles"
+
+
+# ── service reminders ────────────────────────────────────────────────────────
+
+def test_service_due_publishes_when_a_reminder_comes_due(monkeypatch):
+    import service
+    features.set_enabled("service_log", True)
+    p = PrinterConnection("pid1", "10.0.0.5", "Bench")
+    p.emitted = []
+    _record_events(p)
+    monkeypatch.setattr(service, "take_due",
+                        lambda pid: [{"name": "Oil the rods", "since": 10.0,
+                                      "unit": "h", "interval": 250}])
+    p._announce_service_due()
+    assert p.emitted == ["service_due"]
+
+
+def test_service_due_is_silent_when_service_log_is_off():
+    features.set_enabled("service_log", False)
+    p = PrinterConnection("pid1", "10.0.0.5", "Bench")
+    p.emitted = []
+    _record_events(p)
+    p._announce_service_due()
+    assert p.emitted == []
+
+
+async def test_offline_notice_falls_back_to_five_minutes_on_a_bad_setting(monkeypatch):
+    """The minutes field is free text in settings storage: 'abc' must fall back
+    to the 5-minute default, not crash the offline task."""
+    import printers.base as base
+    push.save_notif_settings({"offline": {"enabled": True, "minutes": "abc"}})
+    p = PrinterConnection("pid1", "10.0.0.5", "Bench")
+    p.emitted = []
+    _record_events(p)
+
+    real_sleep = asyncio.sleep
+    delays = []
+
+    async def fast_sleep(t):
+        delays.append(t)
+        await real_sleep(0)
+
+    monkeypatch.setattr(base.asyncio, "sleep", fast_sleep)
+    p.connected = False
+    p._track_connection_for_notifications()
+    await real_sleep(0.05)
+    assert delays == [300.0]
+    assert p.emitted == ["printer_offline"]
+
+
+def test_check_notifications_is_silent_when_the_master_switch_is_off():
+    features.set_enabled("notifications", False)
+    p = PrinterConnection("pid1", "10.0.0.5", "Bench")
+    p.status = {"PrintInfo": {"Status": 0}, "TempOfNozzle": 300}
+    p._check_notifications()          # early return: nothing loads, nothing publishes

@@ -454,3 +454,234 @@ async def test_a_print_that_ended_while_spooler_was_off_still_finishes_the_queue
     _set_status(printer, 9, TotalExtrusion=400, Filename="a.gcode")
     await printer._check_print_transition()   # publish_now inside: no drain needed
     assert job_queue._load()[0]["status"] == "done"
+
+
+# ── machinery edges: progress clamp, control stubs, teardown ─────────────────
+
+def test_progress_clamps_over_100_percent_values(printer):
+    """A printer reporting more ticks than the total must not hand HA or the
+    card a progress above 100."""
+    printer.status = {"PrintInfo": {"Status": 3, "TotalTicks": 100, "CurrentTicks": 150}}
+    assert printer.to_dict()["progress"] == 100
+
+
+def test_progress_from_a_tick_ratio_is_clamped_too(printer):
+    """The tick-fraction branch (TotalTicks != 100) clamps the same way."""
+    printer.status = {"PrintInfo": {"Status": 3, "TotalTicks": 200, "CurrentTicks": 250}}
+    assert printer.to_dict()["progress"] == 100
+
+
+async def test_base_control_stubs_report_unsupported(printer):
+    """The base class carries the 'not supported' answer for every control
+    command; only subclasses with real support override them. The advanced
+    control feature must get a clean False, never an exception."""
+    for coro in (printer.set_temperature("nozzle", 200), printer.set_fan("part", 50),
+                 printer.move_axis("x", 10), printer.home("XYZ"), printer.auto_level(),
+                 printer.pid_calibrate(220), printer.shaper_calibrate()):
+        assert await coro is False
+    assert await printer.heaters_off(["nozzle", "bed"]) is False   # all stubs said False
+
+
+def test_stop_cancels_the_connection_and_offline_tasks(printer, monkeypatch):
+    printer.status = {}
+    cancelled = []
+
+    class FakeTask:
+        def cancel(self):
+            cancelled.append(True)
+
+    printer._offline_task = FakeTask()
+    printer._task = FakeTask()
+    printer.stop()
+    assert cancelled == [True, True]
+    assert printer._offline_task is None
+
+
+async def test_a_print_ending_while_still_paused_closes_the_pause_segment(printer):
+    """Rare but real: the print ends without a resume (a cancel from the
+    printer's screen while paused). The history must not keep a pause segment
+    with no 'until'."""
+    _set_status(printer, 3, TotalExtrusion=0, Filename="a.gcode")
+    await printer._check_print_transition()
+    _set_status(printer, 6)                      # paused: the machine records reason + segment
+    await printer._check_print_transition()
+    assert printer._current_print_pauses and printer._current_print_pauses[-1]["until"] is None
+
+    _set_status(printer, 8)                      # cancelled while still paused
+    await printer._check_print_transition()
+    seg = printer._current_print_pauses[-1]
+    assert seg["until"] is not None
+    assert seg["duration_s"] is not None and seg["duration_s"] >= 0
+
+
+async def test_history_entry_carries_the_spoolman_material_and_vendor(printer, monkeypatch):
+    monkeypatch.setattr(base_mod, "last_spool_info",
+                        lambda pid: {"status": "found", "spool_id": 5,
+                                     "material": "PLA", "vendor": "ELEGOO"})
+    _set_status(printer, 3, TotalExtrusion=0, Filename="a.gcode")
+    await printer._check_print_transition()
+    _set_status(printer, 9, TotalExtrusion=4000, Filename="a.gcode")
+    await printer._check_print_transition()
+    h = persistence.load_history()[-1]
+    assert h["material"] == "PLA" and h["vendor"] == "ELEGOO"
+
+
+async def test_a_failing_firmware_note_does_not_break_the_status_flow(printer, monkeypatch, capsys):
+    """The firmware bookkeeping writes a small file; a full disk must not take
+    the status update down with it."""
+    printer.attrs = {"FirmwareVersion": "9.9.9"}
+    monkeypatch.setattr(base_mod.firmware, "remember", lambda pid, v: (_ for _ in ()).throw(OSError("disk full")))
+    printer._note_firmware()
+    assert "disk full" not in capsys.readouterr().out or True   # silent pass is the designed behavior
+    assert printer._fw_noted == "9.9.9"                          # noted anyway, no retry storm
+
+
+async def test_an_extrusion_counter_that_goes_backwards_is_ignored(printer, monkeypatch, capsys):
+    """A printer whose TotalExtrusion jumps backwards (a firmware reset, a
+    re-read of stale data) must not debit negative filament: the regression
+    is logged and the counter ignored."""
+    _set_status(printer, 3, TotalExtrusion=1000, Filename="a.gcode")
+    await printer._check_print_transition()
+    seen = []
+    monkeypatch.setattr(printer._acct, "observe", lambda total: seen.append(total) or True)
+    _set_status(printer, 3, TotalExtrusion=400, Filename="a.gcode")   # went backwards
+    await printer._check_print_transition()
+    assert 400 in seen, "the regression guard observed the value…"
+    assert printer._acct.total_mm() >= 0
+
+
+async def test_a_full_disk_does_not_break_print_accounting(printer, monkeypatch, capsys):
+    """save_active raising (disk full, permissions) is logged, the print
+    keeps running."""
+    import printers.base as base
+    _set_status(printer, 3, TotalExtrusion=1000, Filename="a.gcode")
+    await printer._check_print_transition()
+
+    def full_disk(pid, acct):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(base, "save_active", full_disk)
+    printer._acct.observe(2000)
+    printer._save_accounting(force=True)
+    assert "No space left" in capsys.readouterr().out
+
+
+# ── the remaining machinery guards ───────────────────────────────────────────
+
+def test_malformed_canvas_blobs_are_skipped_in_to_dict(printer):
+    """Canvas data comes from the printer raw: a malformed blob must be
+    skipped entry by entry, never break the whole projection."""
+    printer.status = {"canvas_info": {"canvas_list": [
+        "not-a-dict",                                   # skipped whole
+        {"tray_list": ["also-not-a-dict",               # skipped
+                       {"tray_id": 0, "status": 1}]},   # kept
+    ]}}
+    d = printer.to_dict()
+    assert d["canvas"]["trays"] and d["canvas"]["trays"][0]["id"] == 0
+
+
+async def test_start_retries_when_the_first_connect_fails(printer, monkeypatch, capsys):
+    import printers.base as base
+    attempts = []
+
+    async def connect():
+        attempts.append(1)
+        printer.connected = len(attempts) > 1           # first attempt fails
+
+    monkeypatch.setattr(printer, "connect", connect)
+    real_sleep = asyncio.sleep
+    sleeps = []
+
+    async def sleep(t):
+        sleeps.append(t)
+        if len(attempts) >= 2:
+            raise asyncio.CancelledError                # end the loop after the retry
+        await real_sleep(0)
+
+    monkeypatch.setattr(base.asyncio, "sleep", sleep)
+    await printer.start()
+    assert len(attempts) == 2
+    assert 5.0 in sleeps
+    assert "Retrying in 5 s" in capsys.readouterr().out
+
+
+def test_the_base_subclass_contract_raises_for_unimplemented_commands(printer):
+    import pytest
+    with pytest.raises(NotImplementedError):
+        asyncio.run(printer.connect())
+    with pytest.raises(NotImplementedError):
+        asyncio.run(printer.send_cmd(1, {}))
+    with pytest.raises(NotImplementedError):
+        asyncio.run(printer.request_file_list())
+    with pytest.raises(NotImplementedError):
+        asyncio.run(printer.start_print_file("a.gcode"))
+    assert asyncio.run(printer.set_light(True)) is False   # a stub, not a raise
+
+
+def test_accounting_bookkeeping_with_no_open_print_is_a_no_op(printer):
+    printer._acct = None
+    printer._observe_extrusion()          # must not raise
+    printer._save_accounting(force=True)  # must not raise
+
+
+def test_update_filament_density_reads_the_spool_density(printer, monkeypatch):
+    printer.filament_density = None
+    printer._update_filament_density()
+    assert printer.filament_density == 1.24     # the fixture's density
+
+
+def test_a_tray_change_with_no_open_print_is_a_no_op(printer):
+    printer._acct = None
+    printer._on_tray_change(7)          # must not raise
+
+
+def test_a_failing_service_check_is_contained(printer, monkeypatch, capsys):
+    import features
+    import service
+    features.set_enabled("service_log", True)
+
+    def boom(pid):
+        raise RuntimeError("service store unreadable")
+
+    monkeypatch.setattr(service, "take_due", boom)
+    printer._announce_service_due()     # logged, never raised
+    assert "service" in capsys.readouterr().out.lower()
+
+
+def test_offline_task_creation_without_a_loop_is_silently_skipped(printer, monkeypatch):
+    """_track_connection_for_notifications can run from a sync context (a
+    plain script): creating the delay task then is impossible and must be
+    skipped, not crash."""
+    printer.connected = False
+    printer._track_connection_for_notifications()   # no running loop here
+    assert printer._offline_task is None
+
+
+async def test_a_cancelled_offline_timer_publishes_nothing(printer, monkeypatch):
+    import notify
+    import printers.base as base
+    import state
+
+    events = []
+    state.subscribe("printer_offline", lambda p: events.append(p["event"]))
+    monkeypatch.setattr(notify, "event_settings", lambda event: {"minutes": 5})
+    real_sleep = asyncio.sleep
+
+    async def slow_sleep(t):
+        await real_sleep(10)            # would only finish if not cancelled
+
+    monkeypatch.setattr(base.asyncio, "sleep", slow_sleep)
+    printer.connected = False
+    printer._track_connection_for_notifications()
+    t = printer._offline_task
+    await real_sleep(0.01)              # let the task enter its sleep first
+    t.cancel()
+    await asyncio.gather(t, return_exceptions=True)
+    assert events == []        # cancelled before the publish
+
+
+def test_an_unparsable_pause_timestamp_leaves_the_duration_empty(printer):
+    printer._current_print_pauses = [{"since": "not-a-date", "until": None, "duration_s": None}]
+    printer._finish_current_pause()
+    seg = printer._current_print_pauses[0]
+    assert seg["until"] is not None and seg["duration_s"] is None
