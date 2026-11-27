@@ -68,13 +68,15 @@ def _write_json(path: Path, data: dict) -> None:
 
 def _start_job(p, info: dict) -> dict:
     started = time.localtime()
-    folder = dataset_dir() / _slug(p.name) / time.strftime("%Y-%m-%d_%H-%M-%S", started)
+    base = dataset_dir()
+    assert base is not None      # every caller gates on dataset_dir() first
+    folder = base / _slug(p.name) / time.strftime("%Y-%m-%d_%H-%M-%S", started)
     folder.mkdir(parents=True, exist_ok=True)
-    job = {"dir": folder, "n": 0,
-           "meta": {"printer": p.name, "printer_type": p.printer_type,
-                    "file": info.get("Filename") or "", "started": time.strftime("%Y-%m-%dT%H:%M:%S", started),
-                    "ended": None, "outcome": None, "label": None}}
-    _write_json(folder / "job.json", job["meta"])
+    meta = {"printer": p.name, "printer_type": p.printer_type,
+            "file": info.get("Filename") or "", "started": time.strftime("%Y-%m-%dT%H:%M:%S", started),
+            "ended": None, "outcome": None, "label": None}
+    job = {"dir": folder, "n": 0, "meta": meta}
+    _write_json(folder / "job.json", meta)
     return job
 
 
@@ -85,7 +87,7 @@ def _end_job(p, job: dict) -> None:
     _write_json(job["dir"] / "job.json", job["meta"])
 
 
-def save_picture(job: dict, jpeg: bytes, info: dict, label: str | None = None) -> None:
+def save_picture(job: dict, jpeg: bytes, info: dict, label: str | None) -> None:
     with _lock:
         name = time.strftime("%H-%M-%S") + (f"_{label}" if label else "") + ".jpg"
         (job["dir"] / name).write_bytes(jpeg)
@@ -133,7 +135,9 @@ async def capture_before_print(p, info: dict) -> None:
     if job is None:
         job = await loop.run_in_executor(None, _start_job, p, info)
         job = _jobs.setdefault(p.id, job)          # the loop or label button may have started it meanwhile
-    await loop.run_in_executor(None, save_picture, job, jpeg, info, "before")
+    # run_in_executor's stub binds the callable's union params strictly; the
+    # runtime call is exact — keep the calls plain rather than contorting them
+    await loop.run_in_executor(None, save_picture, job, jpeg, info, "before")  # type: ignore[arg-type]
 
 
 async def collect_printer(p) -> None:
@@ -151,7 +155,7 @@ async def collect_printer(p) -> None:
     if job is None:
         job = await loop.run_in_executor(None, _start_job, p, info)
         job = _jobs.setdefault(p.id, job)          # the label button may have started it meanwhile
-    await loop.run_in_executor(None, save_picture, job, jpeg, info)
+    await loop.run_in_executor(None, save_picture, job, jpeg, info, None)  # type: ignore[arg-type]
 
 
 async def collect_loop() -> None:

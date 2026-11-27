@@ -19,8 +19,8 @@ from spoolman import spoolman_assign, spoolman_set_location
 
 try:
     from websockets.asyncio.client import connect as ws_connect
-except ImportError:
-    from websockets.client import connect as ws_connect
+except ImportError:     # websockets < 13 legacy layout
+    from websockets.client import connect as ws_connect  # type: ignore[attr-defined, no-redef]
 
 PRINTER_PORT = 3030
 
@@ -158,7 +158,7 @@ class CC1Connection(PrinterConnection):
 
     def _update_phase(self) -> None:
         pi = decode_printinfo(self.status.get("PrintInfo") or {}) if isinstance(self.status.get("PrintInfo"), dict) else {}
-        label = _PHASE_BY_PRINT_STATUS.get(pi.get("Status"), "")
+        label = _PHASE_BY_PRINT_STATUS.get(pi.get("Status"), "")  # type: ignore[arg-type]  # raw payload: an absent Status is a valid miss
         if not label and pi.get("Status") in (0, None):
             arr = self.status.get("CurrentStatus")
             if isinstance(arr, list) and arr:

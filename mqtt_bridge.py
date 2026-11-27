@@ -22,7 +22,7 @@ import urllib.parse
 try:
     import aiomqtt
 except ImportError:     # bridge stays off when the optional dep is absent
-    aiomqtt = None
+    aiomqtt = None      # type: ignore[assignment]
 
 import config
 import features
@@ -121,7 +121,7 @@ def _device(pid: str, d: dict) -> dict:
     # "Spooler <printer name>" so the device is findable in HA by both names —
     # a device named only like the printer is invisible to a "spooler" search.
     dev = {"identifiers": [pid], "name": f"Spooler {d.get('name') or pid}"}
-    model = TYPE_MODELS.get(t)
+    model = TYPE_MODELS.get(t or "")
     if model:
         dev["model"] = model
     if t in ("cc1", "cc2"):
@@ -372,7 +372,6 @@ _off_clear_failed = False
 # changed or cleared in the same breath). Set at every connect.
 _ledger_broker: tuple | None = None
 
-
 def _ledger_outstanding() -> bool:
     return bool(_discovered or _published or _camera_frame_out or _announced_online)
 
@@ -410,7 +409,7 @@ def _poke() -> None:
     first cycle reconciles exactly then."""
     _ensure_owner()
     loop, wake = _owner_loop, _wake
-    if loop is not None and not loop.is_closed():
+    if loop is not None and wake is not None and not loop.is_closed():
         try:
             running = asyncio.get_running_loop()
         except RuntimeError:
@@ -473,6 +472,7 @@ async def _sleep_or_wake(timeout: float) -> None:
     read, so a consumed poke is always acted on; leaving the event set here
     instead would make the nap return instantly forever (an await-free hot
     loop that starves the whole event loop)."""
+    assert _wake is not None      # _ensure_owner sets it before spawning the owner
     try:
         await asyncio.wait_for(_wake.wait(), timeout)
     except TimeoutError:
@@ -590,13 +590,14 @@ _camera_gate_logged: dict = {}  # printer_id -> last logged (connected, camera_u
 _camera_frame_out: set = set()   # printer_ids with a retained frame on the broker — the off-clear must empty these
 _discovered: dict = {}      # printer_id -> discovery topics announced (what the off-clear must empty)
 _announced_online = False   # the availability "online" payload is on the broker, clear it on stop
-_client = None              # the live aiomqtt client, set while connected
+_client: aiomqtt.Client | None = None   # the live aiomqtt client, set while connected
 
 
 async def _publish_discovery(pid: str, msgs) -> None:
     """Publish discovery, remembering each topic as it goes out — a stop that
     cancels the announce mid-way must still leave an accurate record for
     stop_and_clear to empty ("off means off")."""
+    assert _client is not None      # callers hold a live connection
     known = _discovered.setdefault(pid, [])
     for topic, payload in msgs:
         if topic not in known:
@@ -682,6 +683,7 @@ async def _push_frame_now(pid: str, d: dict) -> None:
 
 
 async def _publish_state(pid: str, fresh: dict) -> None:
+    assert _client is not None      # callers checked or hold a live connection
     await _client.publish(_state_topic(pid), json.dumps(fresh), retain=True,
                           timeout=PUBLISH_TIMEOUT_S)
     sent = _published.setdefault(pid, _Sent())

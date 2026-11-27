@@ -11,8 +11,10 @@ import concurrent.futures
 import threading
 import uuid
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, UTC
+from typing import TypedDict
 
 import notifiers
 import push
@@ -70,7 +72,14 @@ def _reason_text(reason: dict) -> str:
     return " ".join(parts)
 
 
-MESSAGES = {
+class _Message(TypedDict):
+    """One prose-registry entry: title is a format string, body either a
+    format string or a callable of the event data (ADR-0002)."""
+    title: str
+    body: "str | Callable[[dict], str]"
+
+
+MESSAGES: dict[str, _Message] = {
     "print_started":   {"title": "{printer} — Print started",
                         "body": lambda d: d.get("filename") or "A print has started."},
     "print_complete":  {"title": "{printer} — Print complete",
@@ -177,7 +186,7 @@ def is_event_on(event: str) -> bool:
     """Cheap pre-check (before a camera picture is taken): master switch on and
     someone wants this event. Doesn't touch the spam guard."""
     key = EVENT_SETTING.get(event)
-    return is_enabled("notifications") and bool(key) and key_wanted(key)
+    return is_enabled("notifications") and key is not None and key_wanted(key)
 
 
 def wants_image(event: str) -> bool:

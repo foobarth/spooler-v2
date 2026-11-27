@@ -86,7 +86,7 @@ def add_subscription(sub: dict, owner: str = "", device: str = "") -> None:
     `device` ("Chrome on Android" ...) and the time it was first added are kept
     for the user's own device list."""
     endpoint = sub.get("endpoint", "")
-    old = next((s for s in _push_subs if s.get("endpoint") == endpoint), {})
+    old: dict = next((s for s in _push_subs if s.get("endpoint") == endpoint), {})
     _push_subs[:] = [s for s in _push_subs if s.get("endpoint") != endpoint]
     _push_subs.append({"endpoint": endpoint, "keys": sub.get("keys") or {}, "owner": owner or "",
                        "device": device or old.get("device", ""), "added": old.get("added") or int(time.time())})

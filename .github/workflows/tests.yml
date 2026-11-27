@@ -25,6 +25,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
 
+      - name: Types (scoped — see mypy.ini)
+        run: |
+          pip install mypy==2.4.1
+          mypy
+
       - name: Lint
         run: ruff check .
 

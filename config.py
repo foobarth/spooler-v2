@@ -22,6 +22,7 @@ import stat
 import threading
 import time
 import urllib.parse
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from persistence import DATA_DIR, _atomic_write
@@ -55,7 +56,7 @@ class Field:
     key: str            # "spoolman.url"
     label: str
     type: str            # "url" | "text" | "secret" | "int" | "bool" | "path"
-    env: str = None      # environment variable used as the default value source
+    env: str | None = None  # environment variable used as the default value source
     default: object = None
     schemes: tuple = ()  # allowed URL schemes, e.g. ("http", "https")
 
@@ -277,7 +278,7 @@ def _dispatch(key: str, value) -> None:
                 print(f"[Config] on_change callback for {key!r} failed: {e}")
 
 
-def on_change(prefix: str, callback) -> None:
+def on_change(prefix: str, callback) -> Callable[[], None]:
     """Register callback(key, value) invoked whenever a field whose key
     starts with `prefix` changes via set() or clear() -- e.g. prefix
     "spoolman." for anything Spoolman-related. Lets a service with a

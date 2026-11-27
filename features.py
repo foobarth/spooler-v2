@@ -20,6 +20,7 @@ import functools
 import json
 import os
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from persistence import DATA_DIR, _atomic_write
@@ -265,7 +266,7 @@ def set_enabled(key: str, value: bool) -> list:
     return cascaded
 
 
-def on_change(key: str, callback) -> None:
+def on_change(key: str, callback) -> Callable[[], None]:
     """Register a callback(enabled: bool) invoked whenever `key`'s effective
     state changes via set_enabled() (including cascaded changes). Lets a
     background job start/stop immediately instead of needing a restart --
@@ -281,6 +282,7 @@ def on_change(key: str, callback) -> None:
             callbacks.remove(callback)
 
     return remove
+
 
 
 def requires_feature(key: str):

@@ -63,14 +63,16 @@ def _wire_mqtt_bridge() -> None:
             task = loop.create_task(coro)
             _lifecycle_tasks.add(task)
             task.add_done_callback(_lifecycle_tasks.discard)
-        elif state.main_loop() is not None:
-            asyncio.run_coroutine_threadsafe(coro, state.main_loop())
-        else:
-            loop = asyncio.new_event_loop()
-            try:
-                loop.run_until_complete(coro)
-            finally:
-                loop.close()
+            return
+        ml = state.main_loop()
+        if ml is not None:
+            asyncio.run_coroutine_threadsafe(coro, ml)
+            return
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(coro)
+        finally:
+            loop.close()
 
     for r in _bridge_hook_removers:
         r()

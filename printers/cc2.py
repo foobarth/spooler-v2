@@ -245,7 +245,7 @@ class CC2Connection(PrinterConnection):
         if isinstance(cmd, int) and cmd > 1000:
             method = cmd  # already a CC2 method code
         else:
-            method = _CC2_METHODS.get(cmd)
+            method = _CC2_METHODS.get(cmd, 0)
             if not method:
                 return False
         if not self._mqtt_registered and method != 1003:
@@ -253,7 +253,7 @@ class CC2Connection(PrinterConnection):
                 print(f"[Printer {self.name}] CC2 not registered yet, dropping method {method}")
             return False
         topic   = f"elegoo/{self._mqtt_serial}/{self._mqtt_client_id}/api_request"
-        payload = {"id": uuid.uuid4().int & 0xFFFF, "method": method}
+        payload: dict[str, object] = {"id": uuid.uuid4().int & 0xFFFF, "method": method}
         if cmd == CMD_LIGHT and data:
             light_on = data.get("LightStatus", {}).get("SecondLight", False)
             payload["params"] = {"brightness": 255 if light_on else 0, "power": 1 if light_on else 0}
@@ -539,7 +539,7 @@ class CC2Connection(PrinterConnection):
         await self.send_cmd(1045, {"storage_media": "local", "file_name": filename, "filename": filename})
         await self.send_cmd(1046, {"storage_media": "local", "filename": filename})
         try:
-            results = await asyncio.wait_for(
+            results: tuple[object, ...] | list[object] = await asyncio.wait_for(
                 asyncio.gather(self._pending_thumb_fut, self._pending_meta_fut,
                                return_exceptions=True),
                 timeout=10,
@@ -673,7 +673,9 @@ class CC2Connection(PrinterConnection):
             if not isinstance(e, dict):
                 return []
             t, cid, tid = e.get("t"), e.get("canvas_id", 0), e.get("tray_id")
-            if not all(isinstance(v, int) and not isinstance(v, bool) for v in (t, cid, tid)):
+            if not (isinstance(t, int) and not isinstance(t, bool)
+                    and isinstance(cid, int) and not isinstance(cid, bool)
+                    and isinstance(tid, int) and not isinstance(tid, bool)):
                 return []
             if t < 0 or t in seen or (cid, tid) not in known:
                 return []
@@ -780,7 +782,7 @@ class CC2Connection(PrinterConnection):
         self._current_filename = filename
         opts = print_opts or {}
         leveling = bool(opts.get("leveling"))
-        config = {
+        config: dict[str, object] = {
             "delay_video":   bool(opts.get("timelapse")),
             # The firmware only reads bedlevel_force for files without their
             # own BED_MESH_CALIBRATE; for sliced files with one, printer_check

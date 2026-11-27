@@ -554,7 +554,7 @@ class PrinterConnection:
             acct.start_spool = info.get("spool_id")
             self._save_accounting(force=True)
 
-    def _queue_print_ended(self, cur_status: int) -> None:
+    async def _queue_print_ended(self, cur_status: int | None) -> None:
         """Tell the print queue the print here is over, via the bus. Awaited
         (publish_now): the queue must be updated before the history entry
         goes out — the browsers reload the queue when it arrives, and must
@@ -562,8 +562,8 @@ class PrinterConnection:
         end_state = "complete" if cur_status == 9 else ("error" if cur_status == 14 else "cancelled")
         reason = self.state_reason
         message = reason["message"] if reason and reason["kind"] == "error" and reason.get("message") else None
-        return state.publish_now("print_ended", printer_id=self.id,
-                                 data={"end_state": end_state, "error": message})
+        await state.publish_now("print_ended", printer_id=self.id,
+                                data={"end_state": end_state, "error": message})
 
     async def _flush_orphaned_accounting(self, saved: PrintAccounting) -> None:
         """Spooler was down when a print ended. Deduct what it had seen so far,

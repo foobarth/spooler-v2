@@ -24,12 +24,16 @@ import json
 import re
 import threading
 import time
+from typing import TYPE_CHECKING
 import uuid
 from pathlib import Path
 
 import state
 from features import is_enabled
 from persistence import DATA_DIR, _atomic_write
+
+if TYPE_CHECKING:
+    from printers.base import PrinterConnection
 from gcode import first_value, meta_for_file
 from uploads import UploadError, sanitize_filename
 
@@ -350,7 +354,7 @@ def _matches(job: dict, printer) -> bool:
     return _model_matches(job["gcode_printer_model"], printer.printer_type)
 
 
-def _best_printer_for(job: dict, available: list) -> object | None:
+def _best_printer_for(job: dict, available: list) -> "PrinterConnection | None":
     candidates = [p for p in available if _matches(job, p)]
     if not candidates:
         return None
