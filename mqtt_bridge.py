@@ -183,6 +183,27 @@ def _discovery_messages(pid: str, d: dict):
         })
 
 
+def _superset_discovery_topics(pid: str):
+    """Every discovery topic this code could ever have published for one
+    printer — the registry superset, not what the ledger happens to know.
+    The ledger records only what THIS instance announced; a previous run
+    (different printer state, different code) may have left retained
+    configs the current state never re-publishes — observed live
+    2026-11-27: Canvas topics published while the printer was online
+    survived an off-clear that ran with the printer offline. Canvas tray
+    ids are 0-based protocol truth; the superset sweeps trays 0-7 so a
+    retired tray's entities clear too."""
+    for key, component, *_rest in SENSORS:
+        yield _discovery_topic(component, pid, key)
+    for key, _name, _extra in BINARY_SENSORS:
+        yield _discovery_topic("binary_sensor", pid, key)
+    yield _discovery_topic("camera", pid, "camera")
+    yield _discovery_topic("sensor", pid, "canvas_active_tray")
+    for tid in range(8):
+        for suffix in ("status", "material", "brand", "color"):
+            yield _discovery_topic("sensor", pid, f"canvas_tray{tid}_{suffix}")
+
+
 def _canvas_entities(pid: str, d: dict, canvas: dict):
     """(topic, json payload) for one printer's Canvas entities: the active
     tray plus status/material/brand/color per tray the printer reports.
@@ -337,8 +358,14 @@ _owner_task: asyncio.Task | None = None
 _owner_loop: asyncio.AbstractEventLoop | None = None
 _wake: asyncio.Event | None = None
 
+# parked: keep retrying a failed off-clear this often
 _CLEAR_RETRY_S = 60.0        # parked: keep retrying a failed off-clear this often
 ACK_TIMEOUT_S = 10.0        # how long turning OFF waits to report "done"
+
+# the last off-clear's superset sweep failed (broker unreachable) with an empty
+# ledger — the ledger cannot represent the sweep, so this flag carries the
+# retry until a clear succeeds
+_off_clear_failed = False
 
 # broker the outstanding retained payloads were published to — the clear
 # targets THIS, never whatever the config says now (the URL may have been
@@ -431,7 +458,7 @@ async def _owner():
             raise
         except Exception as e:
             print(f"[Bridge] lifecycle error ({type(e).__name__}: {e}) — retrying")
-        if _desired_params() is None and _ledger_outstanding():
+        if _desired_params() is None and (_ledger_outstanding() or _off_clear_failed):
             # parked with retained payloads outstanding (the clear failed —
             # broker down?): keep finishing "off" instead of leaving stale
             # entities forever. A poke ends the nap early.
@@ -456,13 +483,15 @@ async def _sleep_or_wake(timeout: float) -> None:
 async def _reconcile() -> None:
     """Bring reality to desire — the only place that connects or clears.
     Returns when reality matches desire, so a spurious wake costs one pass."""
+    global _off_clear_failed
     while True:
         wanted = _desired_params()
         if wanted is None:
-            if _ledger_outstanding():
+            if _ledger_outstanding() or _off_clear_failed or state.printers:
                 await _clear_records()      # off means off (retried on failure)
             return
-        if _ledger_outstanding() and _ledger_broker != wanted:
+        if _ledger_broker is not None and _ledger_broker != wanted \
+                and (_ledger_outstanding() or _off_clear_failed):
             await _clear_records()          # broker moved: empty the OLD one first
         await _hold(wanted)                 # returns when desire changed or the connection died
 
@@ -678,14 +707,18 @@ async def _announce(client) -> None:
 
 
 async def _clear_records():
-    """Empty every retained payload we ever published — availability, state
-    and discovery — against the broker the records were published to, so
-    switching the feature off makes the HA entities vanish instead of going
-    stale. Best effort: if the broker is unreachable the records survive and
-    the owner retries (the parked retry, and every later reconcile)."""
-    global _ledger_broker, _announced_online
-    if aiomqtt is None or not _ledger_outstanding():
+    """Empty every retained payload we ever published — availability, state,
+    discovery and camera frames — against the broker the records were
+    published to, so switching the feature off makes the HA entities vanish
+    instead of going stale. The discovery sweep is the registry SUPERSET for
+    every printer the instance knows (state, ledger), so topics a previous
+    instance published and this one never re-announced are emptied too.
+    Best effort: if the broker is unreachable the records survive and the
+    owner retries (the parked retry, and every later reconcile)."""
+    global _ledger_broker, _announced_online, _off_clear_failed
+    if aiomqtt is None:
         return
+    _off_clear_failed = False
     broker = _ledger_broker or _broker_params()
     if not broker or not broker[0]:
         print("[Bridge] No broker known to clear discovery on — keeping the records")
@@ -696,11 +729,13 @@ async def _clear_records():
             username=broker[2], password=broker[3],
         ) as client:
             await client.publish(BRIDGE_AVAILABILITY, b"", retain=True, timeout=PUBLISH_TIMEOUT_S)
-            for pid in set(_discovered) | set(_published):
-                for topic in _discovered.get(pid, []):
+            # the registry superset for every printer we know of — the ledger's
+            # exact topics are a subset, so this also sweeps what a previous
+            # instance published and this one never re-announced
+            for pid in set(state.printers) | set(_discovered) | set(_published):
+                for topic in _superset_discovery_topics(pid):
                     await client.publish(topic, b"", retain=True, timeout=PUBLISH_TIMEOUT_S)
                 await client.publish(_state_topic(pid), b"", retain=True, timeout=PUBLISH_TIMEOUT_S)
-            for pid in set(_camera_frame_out):
                 await client.publish(_camera_topic(pid), b"", retain=True, timeout=PUBLISH_TIMEOUT_S)
             # QoS-0 publishes are handed to aiomqtt's loop task; leaving the
             # context immediately would drop whatever it hasn't written yet.
@@ -708,6 +743,7 @@ async def _clear_records():
     except aiomqtt.MqttError as e:
         print(f"[Bridge] Broker unreachable, retained discovery not cleared yet "
               f"({type(e).__name__}: {e}) — retrying")
+        _off_clear_failed = True
         return
     _discovered.clear()
     _camera_last_sent.clear()

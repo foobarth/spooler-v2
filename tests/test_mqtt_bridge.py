@@ -31,6 +31,7 @@ async def broker(monkeypatch):
     monkeypatch.setattr(mqtt_bridge, "_announced_online", False)
     monkeypatch.setattr(mqtt_bridge, "_ledger_broker", None)
     monkeypatch.setattr(mqtt_bridge, "_client", None)
+    monkeypatch.setattr(mqtt_bridge, "_off_clear_failed", False)
     yield b
     config_set("mqtt.url", "")                  # off means off, also for the owner
     await mqtt_bridge.sync_lifecycle()
@@ -453,6 +454,40 @@ async def test_turning_off_empties_every_retained_topic(broker, monkeypatch):
         last = cleared.get(topic)
         assert last is not None, f"{topic} was never cleared"
         assert last.retain, f"{topic} was cleared non-retained"
+
+
+async def test_off_clear_empties_topics_a_previous_instance_published(broker, monkeypatch):
+    """The ledger only knows what THIS instance published. A previous run
+    (Elli online with Canvas, different code, different state) may have left
+    discovery topics on the broker that this one never announces itself —
+    observed live 2026-11-27: flipping HA discovery off cleared everything
+    the running instance knew about and left every canvas topic retained.
+    Off-means-off must empty the registry superset for every printer the
+    instance knows, not just the ledger's topics."""
+    import aiomqtt
+
+    # a previous instance's leftovers: canvas configs, retained on the broker.
+    # NOTE: the printer must be registered BEFORE the first await — conftest
+    # wires the real channels, so the fixture's config_set schedules a
+    # lifecycle sync that runs at this test's first await and announces
+    # whatever state.printers holds at that moment.
+    _register_printer(monkeypatch)      # Elli offline, NO canvas in its state
+    async with aiomqtt.Client(hostname="127.0.0.1", port=broker.port,
+                              identifier="previous-instance") as seed:
+        for key in ("canvas_tray0_status", "canvas_tray3_color", "canvas_active_tray"):
+            await seed.publish(f"homeassistant/sensor/p1/{key}/config",
+                               b'{"name": "stale"}', retain=True, timeout=5.0)
+        await asyncio.sleep(0.2)    # let the fake broker record the QoS-0 writes
+
+    await mqtt_bridge.sync_lifecycle()  # connects, announces (no canvas topics)
+    await broker.wait_for_publish("spooler/p1/state")
+
+    config_set("mqtt.url", "")
+    await mqtt_bridge.sync_lifecycle()  # off: the superset must sweep the stale topics
+
+    for key in ("canvas_tray0_status", "canvas_tray3_color", "canvas_active_tray"):
+        topic = f"homeassistant/sensor/p1/{key}/config"
+        assert broker.payloads(topic)[-1] == b"", f"{topic} (stale from a previous run) survived the off-clear"
 
 
 async def test_turning_off_without_a_prior_run_is_a_no_op(broker):
