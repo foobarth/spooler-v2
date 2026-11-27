@@ -27,14 +27,25 @@ except ImportError:     # bridge stays off when the optional dep is absent
 import config
 import features
 import state
+from notifiers import webhook_payload
 from snapshot import grab_jpeg
 
 NUMERIC_THROTTLE_S = 5.0    # numerics republish at most this often
 PUBLISH_TIMEOUT_S = 10.0    # every publish is bounded: a silently-dead socket (no
                             # RST — writes never complete, nothing raises) must
                             # surface as an error, not hang the publisher forever
+NOTIFY_ACK_TIMEOUT_S = 25.0  # notification handoff: up to two bounded publishes
 CAMERA_INTERVAL_S = 10.0    # snapshot cadence while a print is running
 IDLE_CAMERA_INTERVAL_S = 60.0   # snapshot cadence while connected but idle
+
+NOTIFY_TOPIC = "spooler/notification"
+NOTIFY_IMAGE_TOPIC = "spooler/notification/image"
+
+
+class NotificationPublishError(Exception):
+    """The MQTT notification channel's failure mode — the notifiers layer
+    translates it into its own NotifierError, so send_test reports it the
+    same way it reports every other channel's failure."""
 
 _client_id = "spooler-bridge"
 
@@ -252,6 +263,13 @@ def _broker_params():
     )
 
 
+def _ha_on() -> bool:
+    """Home Assistant discovery is an optional layer on top of the agnostic
+    MQTT core (docs/adr-mqtt-bridge.md §Agnostic core): off, only the generic
+    topics flow — no homeassistant/ config is ever published."""
+    return bool(config.get("mqtt.home_assistant"))
+
+
 async def _camera_tick(client, wanted) -> None:
     """One snapshot round for every connected printer with a camera: ~10 s
     while printing/paused, ~IDLE_CAMERA_INTERVAL_S otherwise, nothing when
@@ -333,13 +351,16 @@ def _ledger_outstanding() -> bool:
 
 
 def _desired_params():
-    """The broker to hold while the bridge should run — feature on AND broker
-    URL set — or None when it should not. aiomqtt absent: never runs."""
+    """The desired state while the integration should run — feature on AND
+    broker URL set — or None when it should not. The HA-discovery flag is part
+    of the tuple, so flipping it while connected is a real transition (clean
+    disconnect, clear, re-announce), never a silent ignore. aiomqtt absent:
+    never runs."""
     if aiomqtt is None:
         return None
-    if not features.is_enabled("mqtt_bridge") or not config.get("mqtt.url"):
+    if not features.is_enabled("mqtt_integration") or not config.get("mqtt.url"):
         return None
-    return _broker_params()
+    return (*_broker_params(), _ha_on())
 
 
 def _ensure_owner() -> None:
@@ -481,6 +502,43 @@ async def _hold(wanted) -> None:
     # falling out of the async with on a desire change = clean DISCONNECT, no LWT
 
 
+# ── MQTT notification channel (publishes through the integration's connection) ──
+
+def publish_notification(n) -> None:
+    """Thread-safe entry for the MQTT notification channel, called from
+    notify's worker thread. Publishes through the ONE connection the owner
+    holds (never a second client) and blocks until the broker confirms —
+    bounded — so a failure surfaces as NotificationPublishError and send_test
+    can report it, exactly like every other channel reports its failures."""
+    if aiomqtt is None or _desired_params() is None:
+        raise NotificationPublishError("The MQTT integration is switched off (or no broker is set).")
+    loop = _owner_loop
+    if loop is None or loop.is_closed():
+        raise NotificationPublishError("The MQTT integration's connection is not running.")
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+    if running is loop:
+        raise NotificationPublishError("publish_notification must not run on the owner loop's thread.")
+    try:
+        fut = asyncio.run_coroutine_threadsafe(_publish_notification(n), loop)
+        fut.result(timeout=NOTIFY_ACK_TIMEOUT_S)
+    except NotificationPublishError:
+        raise
+    except Exception as e:
+        raise NotificationPublishError(f"The broker rejected the notification ({type(e).__name__}).") from None
+
+
+async def _publish_notification(n) -> None:
+    if _client is None:
+        raise NotificationPublishError("The broker connection is down — try again when it returns.")
+    if n.image:
+        # the picture goes first: a consumer reacting to the JSON finds it already there
+        await _client.publish(NOTIFY_IMAGE_TOPIC, n.image, timeout=PUBLISH_TIMEOUT_S)
+    await _client.publish(NOTIFY_TOPIC, json.dumps(webhook_payload(n)), timeout=PUBLISH_TIMEOUT_S)
+
+
 # ── status_update subscriber ─────────────────────────────────────────────────
 # Transitions (state/connected/printing) go out immediately; every other
 # change is a numeric refresh and waits for NUMERIC_THROTTLE_S. A suppressed
@@ -520,7 +578,10 @@ async def _publish_discovery(pid: str, msgs) -> None:
 async def _sync_discovery(pid: str, d: dict) -> bool:
     """Announce discovery topics the printer deserves but that were never
     published — late-arriving canvas (the 30 s poll), a camera appearing.
-    True when something went out."""
+    True when something went out. The HA-discovery toggle gates this entirely
+    (the agnostic core keeps flowing regardless)."""
+    if not _ha_on():
+        return False
     known = set(_discovered.get(pid, []))
     msgs = [(t, p) for t, p in _discovery_messages(pid, d) if t not in known]
     if not msgs:
@@ -604,9 +665,12 @@ async def _announce(client) -> None:
     global _announced_online
     await client.publish(BRIDGE_AVAILABILITY, "online", retain=True, timeout=PUBLISH_TIMEOUT_S)
     _announced_online = True
+    if _ha_on():
+        for pid, pr in list(state.printers.items()):
+            d = _printer_dict(pr)
+            await _publish_discovery(pid, _discovery_messages(pid, d))
     for pid, pr in list(state.printers.items()):
         d = _printer_dict(pr)
-        await _publish_discovery(pid, _discovery_messages(pid, d))
         fresh = bridge_state(d)
         await client.publish(_state_topic(pid), json.dumps(fresh), retain=True)
         sent = _published.setdefault(pid, _Sent())

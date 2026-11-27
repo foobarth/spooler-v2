@@ -691,6 +691,8 @@ const _NOTIF_CHANNELS = [
     help: "Channel settings → Services and data → Webhooks → copy the webhook address." },
   { key: "webhook",  feature: "notify_webhook",  title: "Webhook",  prefix: "webhook.",
     help: "Spooler sends each notification as JSON (POST) to this address." },
+  { key: "mqtt",     feature: "notify_mqtt",     title: "MQTT",     prefix: "mqtt.",
+    help: "Publishes each notification as JSON to a topic on your MQTT broker (spooler/notification), with the picture on spooler/notification/image. Uses the broker set under Integrations → MQTT; automations on your broker (Home Assistant among them) can act on it." },
 ];
 
 function _channelFieldsHtml(ch) {

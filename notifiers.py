@@ -144,11 +144,10 @@ def _discord_send(n, get=config.get) -> None:
 WEBHOOK_SCHEMA_VERSION = 1
 
 
-def _webhook_send(n, get=config.get) -> None:
-    url = get("webhook.url")
-    if not url:
-        raise NotifierError("No webhook address is set.")
-    _check_http_url(url, "The webhook address")
+def webhook_payload(n) -> dict:
+    """The schema_version-1 field set — ONE receiver contract shared by the
+    webhook channel (POSTed) and the MQTT notification channel (published to
+    spooler/notification), so a consumer can treat them identically."""
     payload = {
         "schema_version": WEBHOOK_SCHEMA_VERSION, "id": n.id, "timestamp": n.timestamp,
         "event": n.event, "printer_id": n.printer_id, "printer": n.printer_name,
@@ -157,7 +156,25 @@ def _webhook_send(n, get=config.get) -> None:
     }
     if n.extra:
         payload["details"] = n.extra
-    _request(url, json.dumps(payload).encode(), {"Content-Type": "application/json"}, "POST")
+    return payload
+
+
+def _webhook_send(n, get=config.get) -> None:
+    url = get("webhook.url")
+    if not url:
+        raise NotifierError("No webhook address is set.")
+    _check_http_url(url, "The webhook address")
+    _request(url, json.dumps(webhook_payload(n)).encode(), {"Content-Type": "application/json"}, "POST")
+
+
+# ── MQTT (publishes through the MQTT integration's connection) ───────────────
+
+def _mqtt_send(n, get=config.get) -> None:
+    import mqtt_bridge
+    try:
+        mqtt_bridge.publish_notification(n)
+    except mqtt_bridge.NotificationPublishError as e:
+        raise NotifierError(str(e)) from None
 
 
 # ── Web Push (the pre-existing channel) ──────────────────────────────────────
@@ -176,6 +193,7 @@ CHANNELS = {
     "telegram": ("notify_telegram", ("telegram.token", "telegram.chat_id"), _telegram_send),
     "discord":  ("notify_discord",  ("discord.webhook",),              _discord_send),
     "webhook":  ("notify_webhook",  ("webhook.url",),                  _webhook_send),
+    "mqtt":     ("notify_mqtt",     ("mqtt.url",),                     _mqtt_send),
 }
 
 

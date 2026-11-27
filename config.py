@@ -90,8 +90,12 @@ FIELDS: dict = {
     "discord.webhook": Field(key="discord.webhook", label="Discord webhook address", type="secret", default=""),
     "webhook.url": Field(key="webhook.url", label="Webhook address", type="secret", default=""),
     "mqtt.url": Field(
-        key="mqtt.url", label="MQTT broker address (Home Assistant bridge)", type="url",
+        key="mqtt.url", label="MQTT broker address", type="url",
         env="MQTT_URL", default="", schemes=("mqtt",),
+    ),
+    "mqtt.home_assistant": Field(
+        key="mqtt.home_assistant", label="Publish Home Assistant discovery entities",
+        type="bool", default=True,
     ),
     "mqtt.username": Field(
         key="mqtt.username", label="MQTT username (optional)", type="text", default="",

@@ -160,15 +160,15 @@ def test_http_handler_gated_methods_reference_real_features():
         assert key in features.FEATURES, f"{name} is gated on unknown feature {key!r}"
 
 
-# ── mqtt_bridge flag ─────────────────────────────────────────────────────────
+# ── mqtt_integration flag (renamed from mqtt_bridge, 2026-11-27) ─────────────
 
-def test_mqtt_bridge_enabled_by_default_but_missing_without_broker_url():
+def test_mqtt_integration_enabled_by_default_but_missing_without_broker_url():
     byk = {f["key"]: f for f in features.describe_all()}
-    assert byk["mqtt_bridge"]["enabled"] is True
-    assert byk["mqtt_bridge"]["missing"] is True  # no mqtt.url configured yet
+    assert byk["mqtt_integration"]["enabled"] is True
+    assert byk["mqtt_integration"]["missing"] is True  # no mqtt.url configured yet
 
 
-def test_mqtt_bridge_missing_clears_once_mqtt_url_is_set():
+def test_mqtt_integration_missing_clears_once_mqtt_url_is_set():
     config_set("mqtt.url", "mqtt://192.168.1.60:1883")
     byk = {f["key"]: f for f in features.describe_all()}
-    assert byk["mqtt_bridge"]["missing"] is False
+    assert byk["mqtt_integration"]["missing"] is False

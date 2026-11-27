@@ -151,8 +151,8 @@ async function loadIntegrations() {
 }
 
 const _INTEGRATION_GROUPS = [
-  { title: "Home Assistant", prefix: "mqtt.", testKey: null,
-    help: "Publishes your printers to your own MQTT broker so Home Assistant discovers them as devices — status, temperatures, progress, filament and the snapshot camera included. Set the broker address (for example mqtt://mosquitto:1883) and enable the bridge under Features." },
+  { title: "MQTT", prefix: "mqtt.", testKey: null,
+    help: "Publishes your printers to your own MQTT broker (for example mqtt://mosquitto:1883) — status, temperatures, progress, filament and the snapshot camera, readable by any MQTT consumer. Home Assistant discovery is optional (toggle below); notifications can also ride this connection (Notifications → MQTT)." },
   { title: "Spoolman", prefix: "spoolman.", testKey: "spoolman" },
   { title: "Slicer",   prefix: "slicer.",   testKey: null },
   { title: "Spaghetti detection (Obico)", prefix: "spaghetti.", testKey: "spaghetti",
@@ -357,7 +357,7 @@ function _applyFeatures(list) {
 const _FEATURE_GROUPS = [
   { title: "Monitoring",    keys: ["camera", "print_snapshot", "spaghetti_detection", "dataset_collection"] },
   { title: "Notifications", keys: ["notifications"] },
-  { title: "Integrations",  keys: ["mqtt_bridge"] },
+  { title: "Integrations",  keys: ["mqtt_integration"] },
   { title: "Data",          keys: ["backup", "statistics", "service_log"] },
   { title: "Printing",      keys: ["job_queue", "advanced_control"] },
   { title: "Services",      keys: ["spoolman", "update_check"] },

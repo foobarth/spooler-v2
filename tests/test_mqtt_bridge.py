@@ -398,9 +398,9 @@ async def test_the_bridge_starts_through_the_real_startup_path(broker, monkeypat
 
     # and the feature flag is a live switch, not a restart requirement:
     # off means off (everything cleared), back on reconnects
-    features.set_enabled("mqtt_bridge", False)
+    features.set_enabled("mqtt_integration", False)
     await _wait_for_payload(broker, "spooler/bridge/availability", b"")
-    features.set_enabled("mqtt_bridge", True)
+    features.set_enabled("mqtt_integration", True)
     async def _reconnected():
         while len(broker.connects) < 2:
             await asyncio.sleep(0.01)
@@ -511,12 +511,12 @@ async def test_turning_off_after_a_url_change_empties_the_broker_the_payloads_li
     await b2.start()
     try:
         config_set("mqtt.url", f"mqtt://127.0.0.1:{b2.port}")
-        features.set_enabled("mqtt_bridge", False)
+        features.set_enabled("mqtt_integration", False)
         await mqtt_bridge.sync_lifecycle()
         await _wait_for_payload(broker, "spooler/p1/state", b"")
         await _wait_for_payload(broker, "spooler/bridge/availability", b"")
     finally:
-        features.set_enabled("mqtt_bridge", True)
+        features.set_enabled("mqtt_integration", True)
         await mqtt_bridge.sync_lifecycle()
         await b2.stop()
 
@@ -533,7 +533,7 @@ async def test_off_while_the_broker_is_down_clears_when_the_broker_returns(broke
 
     await broker.stop()                     # broker unreachable at "off" time
     config_set("mqtt.url", "")
-    features.set_enabled("mqtt_bridge", False)
+    features.set_enabled("mqtt_integration", False)
     await mqtt_bridge.sync_lifecycle()
     await _rebind_broker(broker)            # back up — nobody pokes again
     await _wait_for_payload(broker, "spooler/p1/state", b"")
@@ -584,6 +584,57 @@ async def test_no_camera_url_no_camera_discovery(broker, monkeypatch):
     assert not [p for p in broker.topics("homeassistant") if p.topic.startswith("homeassistant/camera/")]
 
 
+# ── agnostic core: the HA-discovery toggle gates only the discovery topics ───
+
+async def test_discovery_toggle_off_still_publishes_the_agnostic_core(broker, monkeypatch):
+    """With "Publish Home Assistant discovery" off, no homeassistant/ topics
+    may exist — but the generic feeds (availability, state, camera frames) are
+    the integration's core and keep flowing for any MQTT consumer."""
+    import mqtt_bridge as mb
+    monkeypatch.setattr(mb, "CAMERA_INTERVAL_S", 0.05)
+    monkeypatch.setattr(mb, "grab_jpeg", lambda url, timeout=5.0: b"jpeg")
+    config_set("mqtt.home_assistant", False)
+    pr = _register_printer(monkeypatch, canvas_info=CANVAS_INFO)
+    pr.connected = True
+    pr.camera_url = "http://192.0.2.5:8080/mjpeg"
+    try:
+        await mqtt_bridge.sync_lifecycle()
+        await broker.wait_for_publish("spooler/p1/state")
+        await asyncio.wait_for(_first_camera_frame(broker), 10.0)
+
+        assert [p for p in broker.topics("homeassistant")] == [], \
+            "the HA toggle must gate every homeassistant/ topic"
+        assert broker.payloads("spooler/bridge/availability"), "availability still flows"
+        assert broker.payloads("spooler/p1/state"), "state still flows"
+        assert broker.payloads("spooler/p1/camera/frame"), "camera frames still flow"
+    finally:
+        config_set("mqtt.home_assistant", True)
+
+
+async def test_flipping_the_discovery_toggle_is_a_real_transition(broker, monkeypatch):
+    """Off→on of "Publish Home Assistant discovery" while connected rides the
+    lifecycle machinery: discovery configs are cleared (off-means-off — HA
+    entities vanish rather than linger unmanaged), the generic core keeps
+    flowing, and flipping back on re-announces everything."""
+    _register_printer(monkeypatch, canvas_info=CANVAS_INFO)
+    await mqtt_bridge.sync_lifecycle()
+    await broker.wait_for_publish("spooler/p1/state")
+    assert broker.topics("homeassistant")
+
+    config_set("mqtt.home_assistant", False)
+    await mqtt_bridge.sync_lifecycle()
+    await _wait_for_payload(broker, "homeassistant/sensor/p1/nozzle_temp/config", b"")
+    ha = {p.topic for p in broker.publishes if p.topic.startswith("homeassistant/")}
+    for topic in ha:
+        assert broker.payloads(topic)[-1] == b"", f"{topic} was not cleared"
+    assert broker.payloads("spooler/p1/state"), "the agnostic core keeps flowing"
+
+    config_set("mqtt.home_assistant", True)
+    await mqtt_bridge.sync_lifecycle()
+    cfg = await broker.wait_for_publish("homeassistant/sensor/p1/nozzle_temp/config")
+    assert cfg.payload != b"" and cfg.retain
+
+
 async def test_camera_frames_flow_while_printing(broker, monkeypatch):
     import mqtt_bridge as mb
     monkeypatch.setattr(mb, "CAMERA_INTERVAL_S", 0.05)
@@ -625,12 +676,12 @@ async def test_off_clear_empties_the_camera_frame_topic(broker, monkeypatch):
     await mqtt_bridge.sync_lifecycle()
     await broker.wait_for_publish("spooler/p1/camera/frame")
 
-    features.set_enabled("mqtt_bridge", False)
+    features.set_enabled("mqtt_integration", False)
     try:
         await mqtt_bridge.sync_lifecycle()
         await _wait_for_payload(broker, "spooler/p1/camera/frame", b"")
     finally:
-        features.set_enabled("mqtt_bridge", True)
+        features.set_enabled("mqtt_integration", True)
 
 
 async def test_camera_feeds_slowly_while_idle(broker, monkeypatch):
@@ -706,6 +757,85 @@ async def test_a_dead_socket_self_heals(broker, monkeypatch):
 
     monkeypatch.setattr(paho_mqtt.Client, "publish", hang_paho_publish)
     await _wait_for_publish_after(broker, "spooler/p1/camera/frame", n, timeout=15.0)
+
+
+# ── MQTT notification channel: publish through the integration's connection ──
+
+async def test_publish_notification_sends_the_webhook_schema_json(broker, monkeypatch):
+    """Same schema_version-1 field set as the webhook channel — one receiver
+    contract. Non-retained: a notification is a transient event, not state."""
+    from notify import Notification
+    _register_printer(monkeypatch)
+    await mqtt_bridge.sync_lifecycle()
+    await broker.wait_for_connect()
+
+    n = Notification("print_complete", "p1", "Bench — Print complete",
+                     "benchy.gcode is done.", printer_name="Bench", priority="low")
+    await asyncio.to_thread(mqtt_bridge.publish_notification, n)
+    msg = await broker.wait_for_publish("spooler/notification")
+    assert msg.retain is False
+    body = json.loads(msg.payload)
+    assert body["schema_version"] == 1
+    assert body["event"] == "print_complete" and body["printer"] == "Bench"
+    assert body["title"] == "Bench — Print complete" and body["body"] == "benchy.gcode is done."
+    assert body["priority"] == "low" and body["has_image"] is False
+    assert body["id"] and body["timestamp"]
+
+
+async def test_notification_image_is_published_before_the_json(broker, monkeypatch):
+    """Same-client publish order: when a consumer reacts to the JSON, the
+    picture is already on its topic."""
+    from notify import Notification
+    _register_printer(monkeypatch)
+    await mqtt_bridge.sync_lifecycle()
+    await broker.wait_for_connect()
+
+    n = Notification("print_complete", "p1", "T", "B", image=b"jpeg-bytes")
+    await asyncio.to_thread(mqtt_bridge.publish_notification, n)
+    await broker.wait_for_publish("spooler/notification")
+    pubs = [p for p in broker.publishes
+            if p.topic in ("spooler/notification", "spooler/notification/image")]
+    order = [p.topic for p in pubs]
+    assert order.index("spooler/notification/image") < order.index("spooler/notification")
+    img = [p for p in pubs if p.topic == "spooler/notification/image"][-1]
+    assert img.payload == b"jpeg-bytes" and img.retain is False
+
+
+async def test_publish_notification_fails_plainly_when_the_connection_is_down(broker, monkeypatch):
+    """The channel must never fire-and-forget: a dead broker surfaces as a
+    readable error the same way every other channel reports failures."""
+    from notify import Notification
+    _register_printer(monkeypatch)
+    await mqtt_bridge.sync_lifecycle()
+    await broker.wait_for_connect()
+    await broker.stop()                    # broker gone: the owner is in backoff
+
+    n = Notification("print_complete", "p1", "T", "B")
+    with pytest.raises(mqtt_bridge.NotificationPublishError):
+        await asyncio.to_thread(mqtt_bridge.publish_notification, n)
+
+
+async def test_the_notification_channel_reaches_the_broker_through_notifiers(broker, monkeypatch):
+    """Assembly: the real channel wiring (notifiers.CHANNELS -> _mqtt_send ->
+    the bridge's connection), not a direct call to the internal helper."""
+    import notifiers
+    from notify import Notification
+    _register_printer(monkeypatch)
+    await mqtt_bridge.sync_lifecycle()
+    await broker.wait_for_connect()
+
+    n = Notification("test", "p1", "Spooler — test notification", "If you can read this, this channel works.")
+    await asyncio.to_thread(notifiers.send, "mqtt", n)
+    msg = await broker.wait_for_publish("spooler/notification")
+    assert json.loads(msg.payload)["event"] == "test"
+
+
+async def test_the_notification_channel_reports_failure_when_the_integration_is_off(broker, monkeypatch):
+    import notifiers
+    from notify import Notification
+    config_set("mqtt.url", "")             # integration off: desired None
+    with pytest.raises(notifiers.NotifierError):
+        notifiers.send("mqtt", Notification("test", "p1", "T", "B"))
 
 
 def test_discovery_config_is_ha_quality():

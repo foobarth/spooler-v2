@@ -156,6 +156,7 @@ def test_webhook_payload(sent):
 
 @pytest.mark.parametrize("channel,keys", [
     ("ntfy", {}), ("telegram", {"telegram.token": "x"}), ("discord", {}), ("webhook", {}),
+    ("mqtt", {"mqtt.url": "mqtt://192.168.1.60:1883"}),
 ])
 def test_missing_settings_give_readable_error(sent, channel, keys):
     for k, v in keys.items():
@@ -163,6 +164,33 @@ def test_missing_settings_give_readable_error(sent, channel, keys):
     with pytest.raises(notifiers.NotifierError):
         notifiers.send(channel, Notification("x", "p", "T"))
     assert not sent
+
+
+# ── MQTT channel: rides the MQTT integration's broker connection ────────────
+
+def test_mqtt_channel_registered_and_configured_by_the_broker_url():
+    feat, keys, _ = notifiers.CHANNELS["mqtt"]
+    assert feat == "notify_mqtt" and keys == ("mqtt.url",)
+    assert not notifiers.is_configured("mqtt")
+    config.set("mqtt.url", "mqtt://192.168.1.60:1883")
+    assert notifiers.is_configured("mqtt")
+
+
+def test_mqtt_channel_is_not_a_user_channel():
+    """One broker is shared: a per-user MQTT channel would fan the same
+    notification out repeatedly to the same topic."""
+    assert "mqtt" not in notifiers.USER_CHANNELS
+
+
+def test_notify_mqtt_requires_the_mqtt_integration():
+    config.set("mqtt.url", "mqtt://192.168.1.60:1883")
+    assert features.is_enabled("notify_mqtt") is True
+    features.set_enabled("mqtt_integration", False)     # cascades notify_mqtt off
+    assert features.is_enabled("notify_mqtt") is False
+    features.set_enabled("mqtt_integration", True)
+    assert features.is_enabled("notify_mqtt") is False  # dependents are not auto-reenabled
+    features.set_enabled("notify_mqtt", True)
+    assert features.is_enabled("notify_mqtt") is True
 
 
 def test_bad_urls_rejected(sent):

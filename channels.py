@@ -75,8 +75,8 @@ def _wire_mqtt_bridge() -> None:
     for r in _bridge_hook_removers:
         r()
     _bridge_hook_removers.clear()
-    _bridge_hook_removers.append(features.on_change("mqtt_bridge", lambda enabled: schedule()))
-    _bridge_hook_removers.append(config.on_change("mqtt.url", lambda key, value: schedule()))
+    _bridge_hook_removers.append(features.on_change("mqtt_integration", lambda enabled: schedule()))
+    _bridge_hook_removers.append(config.on_change("mqtt.", lambda key, value: schedule()))
     schedule()      # startup
 
 

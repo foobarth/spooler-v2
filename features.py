@@ -136,11 +136,18 @@ FEATURES: dict = {
         description="POST every notification as JSON to an address you choose.",
         requires=("notifications",), requires_config=("webhook.url",),
     ),
-    "mqtt_bridge": Feature(
-        key="mqtt_bridge", name="Home Assistant MQTT bridge", default=True,
-        description="Publish printer status, events and camera to your own MQTT broker with Home "
-                    "Assistant discovery — one entity set per printer, Spooler stays the only "
-                    "client on each printer's own connection. Broker address under Integrations.",
+    "notify_mqtt": Feature(
+        key="notify_mqtt", name="MQTT notifications", default=True,
+        description="Publish every notification as JSON to a topic on your MQTT broker "
+                    "(spooler/notification), so automations on your broker can act on it.",
+        requires=("notifications", "mqtt_integration"), requires_config=("mqtt.url",),
+    ),
+    "mqtt_integration": Feature(
+        key="mqtt_integration", name="MQTT integration", default=True,
+        description="Publish printer status, camera and notifications to your own MQTT broker — "
+                    "one topic set per printer, readable by any MQTT consumer, with optional Home "
+                    "Assistant discovery. Spooler stays the only client on each printer's own "
+                    "connection. Broker address under Integrations.",
         requires_config=("mqtt.url",),
     ),
 }
