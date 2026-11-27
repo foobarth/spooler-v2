@@ -213,6 +213,28 @@ def _superset_discovery_topics(pid: str):
             yield _discovery_topic("sensor", pid, f"canvas_tray{tid}_{suffix}")
 
 
+def _notification_sensor_config() -> dict:
+    """The ready-made HA wrapper for the notification topic: state = the
+    event name (enum over every event the prose registry knows), the
+    payload's facts as attributes. One sensor for the whole bridge — the
+    printer rides inside the payload (printer_id). Exists only while the
+    notify_mqtt feature feeds the topic."""
+    import notify
+    return {
+        "name": "Last notification",
+        "unique_id": "spooler-notification",
+        "state_topic": NOTIFY_TOPIC,
+        "value_template": "{{ value_json.event }}",
+        "json_attributes_topic": NOTIFY_TOPIC,
+        "json_attributes": ["printer", "title", "body", "priority", "has_image", "timestamp", "id"],
+        "device_class": "enum",
+        "options": sorted(set(notify.MESSAGES) | {"test"}),
+        "availability_topic": BRIDGE_AVAILABILITY,
+        "icon": "mdi:bell-ring",
+        "device": {"identifiers": ["spooler-notifications"], "name": "Spooler Notifications"},
+    }
+
+
 def _canvas_entities(pid: str, d: dict, canvas: dict):
     """(topic, json payload) for one printer's Canvas entities: the active
     tray plus status/material/brand/color per tray the printer reports.
@@ -388,15 +410,15 @@ def _ledger_outstanding() -> bool:
 
 def _desired_params():
     """The desired state while the integration should run — feature on AND
-    broker URL set — or None when it should not. The HA-discovery flag is part
-    of the tuple, so flipping it while connected is a real transition (clean
-    disconnect, clear, re-announce), never a silent ignore. aiomqtt absent:
-    never runs."""
+    broker URL set — or None when it should not. The HA-discovery flag and
+    the MQTT-notification feature are part of the tuple, so flipping either
+    while connected is a real transition (clean disconnect, clear,
+    re-announce), never a silent ignore. aiomqtt absent: never runs."""
     if aiomqtt is None:
         return None
     if not features.is_enabled("mqtt_integration") or not config.get("mqtt.url"):
         return None
-    return (*_broker_params(), _ha_on())
+    return (*_broker_params(), _ha_on(), features.is_enabled("notify_mqtt"))
 
 
 def _ensure_owner() -> None:
@@ -710,6 +732,10 @@ async def _announce(client) -> None:
         for pid, pr in list(state.printers.items()):
             d = _printer_dict(pr)
             await _publish_discovery(pid, _discovery_messages(pid, d))
+        if features.is_enabled("notify_mqtt"):
+            await _publish_discovery("spooler", [
+                (_discovery_topic("sensor", "spooler", "notification"),
+                 json.dumps(_notification_sensor_config()))])
     for pid, pr in list(state.printers.items()):
         d = _printer_dict(pr)
         fresh = bridge_state(d)
@@ -741,6 +767,10 @@ async def _clear_records():
             username=broker[2], password=broker[3],
         ) as client:
             await client.publish(BRIDGE_AVAILABILITY, b"", retain=True, timeout=PUBLISH_TIMEOUT_S)
+            # the notification sensor's config: its node ("spooler") is not a
+            # printer pid, so the superset sweep below never touches it
+            await client.publish(_discovery_topic("sensor", "spooler", "notification"),
+                                 b"", retain=True, timeout=PUBLISH_TIMEOUT_S)
             # the registry superset for every printer we know of — the ledger's
             # exact topics are a subset, so this also sweeps what a previous
             # instance published and this one never re-announced

@@ -875,6 +875,64 @@ async def test_the_notification_channel_reports_failure_when_the_integration_is_
         notifiers.send("mqtt", Notification("test", "p1", "T", "B"))
 
 
+# ── the notification sensor: HA's message trigger, wrapped by the bridge ─────
+
+async def test_notification_sensor_discovered_with_the_channel(broker, monkeypatch):
+    """With MQTT notifications on, the bridge publishes a ready-made HA
+    sensor reading the notification topic: state = the event name (enum),
+    the payload's facts as attributes."""
+    _register_printer(monkeypatch)
+    await mqtt_bridge.sync_lifecycle()
+    cfg = await broker.wait_for_publish("homeassistant/sensor/spooler/notification/config")
+    payload = json.loads(cfg.payload)
+    assert payload["state_topic"] == "spooler/notification"
+    assert payload["value_template"] == "{{ value_json.event }}"
+    assert payload["device_class"] == "enum"
+    assert "print_started" in payload["options"] and "test" in payload["options"]
+    assert "title" in payload["json_attributes"] and "has_image" in payload["json_attributes"]
+    assert payload["availability_topic"] == "spooler/bridge/availability"
+    assert payload["device"]["name"] == "Spooler Notifications"
+
+
+async def test_notification_sensor_not_discovered_when_the_channel_is_off(broker, monkeypatch):
+    import features
+    features.set_enabled("notify_mqtt", False)
+    _register_printer(monkeypatch)
+    await mqtt_bridge.sync_lifecycle()
+    await broker.wait_for_publish("spooler/p1/state")
+    assert not [p for p in broker.publishes if p.topic == "homeassistant/sensor/spooler/notification/config"]
+
+
+async def test_notification_sensor_is_emptied_by_the_off_clear(broker, monkeypatch):
+    import features
+    _register_printer(monkeypatch)
+    await mqtt_bridge.sync_lifecycle()
+    await broker.wait_for_publish("homeassistant/sensor/spooler/notification/config")
+    features.set_enabled("mqtt_integration", False)
+    try:
+        await mqtt_bridge.sync_lifecycle()
+        await _wait_for_payload(broker, "homeassistant/sensor/spooler/notification/config", b"")
+    finally:
+        features.set_enabled("mqtt_integration", True)
+
+
+async def test_flipping_the_notification_feature_reannounces_the_sensor(broker, monkeypatch):
+    import features
+    features.set_enabled("notify_mqtt", False)
+    _register_printer(monkeypatch)
+    await mqtt_bridge.sync_lifecycle()
+    await broker.wait_for_publish("spooler/p1/state")
+    features.set_enabled("notify_mqtt", True)
+    async def _config_arrives():
+        while not any(p.payload and p.topic == "homeassistant/sensor/spooler/notification/config"
+                      for p in broker.publishes):
+            await asyncio.sleep(0.01)
+    await asyncio.wait_for(_config_arrives(), 2.0)
+    cfg = [p for p in broker.publishes
+           if p.topic == "homeassistant/sensor/spooler/notification/config" and p.payload][-1]
+    assert json.loads(cfg.payload)["device_class"] == "enum"
+
+
 def test_discovery_config_is_ha_quality():
     """Units, device classes, state classes and icons: HA should render every
     entity as a first-class citizen — duration switchable in more-info,
