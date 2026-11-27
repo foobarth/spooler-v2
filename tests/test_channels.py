@@ -167,3 +167,52 @@ async def test_print_started_leaves_the_light_alone_when_auto_light_is_off(monke
     state.publish("print_started", printer_id="p1")
     await asyncio.sleep(0.05)
     assert light_calls == []
+
+
+async def test_a_config_change_from_a_sync_context_with_no_remembered_loop_still_schedules(monkeypatch):
+    """No running loop and no remembered loop (a plain thread before server
+    startup): the schedule() fallback chain must not drop the poke — it runs
+    the lifecycle sync to completion inline on a throwaway loop."""
+    import asyncio
+    import config
+    import mqtt_bridge
+    import state
+
+    ran = []
+
+    async def stub():
+        ran.append(True)
+
+    monkeypatch.setattr(mqtt_bridge, "sync_lifecycle", stub)
+    monkeypatch.setattr(state, "_main_loop", None)
+
+    def change():
+        config.set("mqtt.home_assistant", True)    # any mqtt.* change pokes
+
+    await asyncio.to_thread(change)
+    assert ran == [True]
+
+
+async def test_a_config_change_from_a_foreign_thread_schedules_on_the_remembered_loop(monkeypatch):
+    """The production poke path: an HTTP handler thread saves a config field;
+    schedule() must hand the lifecycle sync to the remembered main loop —
+    never drop it. This is the path a UI save takes while a print runs."""
+    import asyncio
+    import config
+    import mqtt_bridge
+    import state
+
+    ran = []
+
+    async def stub():
+        ran.append(True)
+
+    monkeypatch.setattr(mqtt_bridge, "sync_lifecycle", stub)
+    state.remember_loop()                      # what server startup does
+
+    def change():
+        config.set("mqtt.home_assistant", False)
+
+    await asyncio.to_thread(change)
+    await asyncio.sleep(0.02)                  # the handoff is fire-and-forget
+    assert ran == [True]
