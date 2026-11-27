@@ -60,7 +60,7 @@ async def test_sync_lifecycle_connects_to_broker(broker):
 
 PROJECTION_KEYS = {"state", "connected", "printing", "nozzle_temp", "nozzle_target",
                    "bed_temp", "bed_target", "chamber_temp", "chamber_target",
-                   "progress", "layer", "total_layer", "time_remaining",
+                   "progress", "layer", "total_layer", "time_remaining", "time_elapsed",
                    "filament_mm", "filament_g", "speed_factor", "firmware_version"}
 
 
@@ -117,7 +117,7 @@ async def test_connect_announces_the_sensor_set_per_printer(broker, monkeypatch)
     topics = {p.topic for p in broker.topics("homeassistant")}
     for key in ("state", "nozzle_temp", "nozzle_target", "bed_temp", "bed_target",
                 "chamber_temp", "progress", "layer", "total_layer", "time_remaining",
-                "filament_mm", "filament_g", "speed_factor", "firmware_version"):
+                "time_elapsed", "filament_mm", "filament_g", "speed_factor", "firmware_version"):
         assert f"homeassistant/sensor/p1/{key}/config" in topics, key
     for key in ("connected", "printing"):
         assert f"homeassistant/binary_sensor/p1/{key}/config" in topics, key
@@ -125,6 +125,7 @@ async def test_connect_announces_the_sensor_set_per_printer(broker, monkeypatch)
 
 async def test_state_topic_publishes_the_canonical_projection(broker, monkeypatch):
     pr = _register_printer(monkeypatch, TempOfNozzle=210, TempTargetNozzle=215, TempOfHotbed=60)
+    pr.status["PrintInfo"].update({"PrintTime": 120, "RemainTime": 300})
     pr.connected = True   # offline printers zero their temps (history, not a reading)
     await mqtt_bridge.sync_lifecycle()
 
@@ -136,6 +137,7 @@ async def test_state_topic_publishes_the_canonical_projection(broker, monkeypatc
     assert s["progress"] == 12          # from layers 12/100, computed by to_dict()
     assert s["printing"] is False       # printer is not printing → "idle"
     assert s["firmware_version"] == "1.2.3"
+    assert s["time_remaining"] == 300 and s["time_elapsed"] == 120
 
 
 async def test_state_topic_zeroes_temps_for_an_offline_printer(broker, monkeypatch):

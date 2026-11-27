@@ -452,6 +452,7 @@ class PrinterConnection:
             "layer":           pi.get("CurrentLayer") or 0,
             "total_layer":     pi.get("TotalLayer") or 0,
             "time_remaining":  pi.get("RemainTime") or 0,
+            "time_elapsed":    pi.get("PrintTime") or 0,
             "speed_factor":    _speed_factor(status, pi),
             # Canonical Canvas: protocol key differences end here, same rule
             # as the numeric keys above. None when the printer reports no
