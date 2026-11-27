@@ -452,10 +452,14 @@ async def confirm_plate_cleared(printer_id: str, print_opts: dict | None = None,
                 raise QueueError("The queued file is missing.")
             if print_opts is None:
                 ok = await printer.upload_file(path, job["filename"], start_after=True)
+                fail_msg = "Could not upload the file to the printer."
             else:
                 ok = await printer.upload_file(path, job["filename"])
-                ok = ok and await printer.start_print_file(job["filename"], print_opts=print_opts)
-            fail_msg = "Upload succeeded but starting the print failed."
+                if ok:
+                    ok = await printer.start_print_file(job["filename"], print_opts=print_opts)
+                    fail_msg = "Upload succeeded but starting the print failed."
+                else:
+                    fail_msg = "Could not upload the file to the printer."
     except UploadError as e:
         raise QueueError(str(e))
     with _lock:

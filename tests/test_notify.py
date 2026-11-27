@@ -763,3 +763,58 @@ def test_check_notifications_is_silent_when_the_master_switch_is_off():
     p = PrinterConnection("pid1", "10.0.0.5", "Bench")
     p.status = {"PrintInfo": {"Status": 0}, "TempOfNozzle": 300}
     p._check_notifications()          # early return: nothing loads, nothing publishes
+
+
+# ── _deliver: one channel's failure never hides the others ───────────────────
+
+@pytest.fixture
+def broken_channel():
+    import notifiers
+    def broken(n, get=None):
+        raise RuntimeError("channel bug")
+    notifiers.CHANNELS["broken"] = ("notify_test", (), broken)
+    yield "broken"
+    notifiers.CHANNELS.pop("broken", None)
+
+
+def test_a_notifier_error_is_logged_not_raised(capsys):
+    import notifiers
+    import notify
+    try:
+        notifiers.CHANNELS["failing"] = ("notify_test", (),
+                                         lambda n, get=None: (_ for _ in ()).throw(notifiers.NotifierError("The service answered HTTP 503.")))
+        notify._deliver(notify.Notification("test", "p", "T"), ["failing"])   # must not raise
+    finally:
+        notifiers.CHANNELS.pop("failing", None)
+    assert "failed: The service answered HTTP 503." in capsys.readouterr().out
+
+
+def test_a_channel_bug_is_isolated_and_logged(broken_channel, capsys):
+    import notify
+    notify._deliver(notify.Notification("test", "p", "T"), [broken_channel])   # must not raise
+    assert "error: RuntimeError" in capsys.readouterr().out
+
+
+def test_one_failing_channel_does_not_stop_the_next(broken_channel, capsys):
+    import notifiers
+    import notify
+    got = []
+    notifiers.CHANNELS["good"] = ("notify_test", (), lambda n, get=None: got.append(n.id) or b"")
+    try:
+        notify._deliver(notify.Notification("test", "p", "T"), ["broken", "good"])
+    finally:
+        notifiers.CHANNELS.pop("good", None)
+    assert len(got) == 1, "the second channel still received the notification"
+
+
+def test_a_users_own_channel_gets_their_settings_lookup():
+    import notifiers
+    import notify
+    got = []
+    notifiers.CHANNELS["good"] = ("notify_test", (), lambda n, get: got.append(get("ntfy.topic")) or b"")
+    try:
+        notify._deliver(notify.Notification("test", "p", "T"),
+                        [("anna/good", "good", lambda key: "anna-topic" if key == "ntfy.topic" else None)])
+    finally:
+        notifiers.CHANNELS.pop("good", None)
+    assert got == ["anna-topic"], "the user's own settings lookup rides to the sender"

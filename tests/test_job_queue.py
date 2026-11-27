@@ -512,3 +512,178 @@ def test_queue_list_shows_who_added_the_job():
 def test_jobs_keep_their_owner_in_the_list(tmp_path):
     job = job_queue.add_job(_gcode(tmp_path), "a.gcode", {"owner": "anna"})
     assert [j["owner"] for j in job_queue.list_jobs() if j["id"] == job["id"]] == ["anna"]
+
+
+# ── error branches (G3: every failure mode pinned) ───────────────────────────
+
+def test_add_job_gives_a_readable_error_for_an_unreadable_gcode(tmp_path, monkeypatch):
+    bad = tmp_path / "bad.gcode"
+    bad.write_bytes(b"not really gcode")
+    monkeypatch.setattr(job_queue, "meta_for_file", lambda path, name: (_ for _ in ()).throw(RuntimeError("decode boom")))
+    with pytest.raises(job_queue.QueueError, match="Could not read the g-code file: RuntimeError"):
+        job_queue.add_job(bad, "bad.gcode", {})
+
+
+def test_list_jobs_survives_an_unreadable_gcode_meta(tmp_path, monkeypatch):
+    import json
+    job = job_queue.add_job(_gcode(tmp_path), "a.gcode", {})
+    qf = job_queue.QUEUE_FILE
+    jobs = json.loads(qf.read_text())
+    for j in jobs:
+        j.pop("print_info", None)
+    qf.write_text(json.dumps(jobs))
+    monkeypatch.setattr(job_queue, "meta_for_file", lambda path, name: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert job_queue.list_jobs()[0]["print_info"] == {}
+
+
+def test_the_spool_material_is_none_when_spoolman_is_off():
+    import features
+    features.set_enabled("spoolman", False)
+    assert job_queue._spool_material(FakePrinter("p1", tray_spool=5)) is None
+
+
+def test_the_spool_material_is_none_without_a_linked_tray():
+    assert job_queue._spool_material(FakePrinter("p1", tray_spool=None)) is None
+
+
+def test_the_spool_material_is_none_when_spoolman_is_broken(monkeypatch):
+    import features
+    features.set_enabled("spoolman", True)
+    p = FakePrinter("p1", tray_spool=5)
+
+    def boom():
+        raise RuntimeError("spoolman down")
+
+    p._tray_spool = boom
+    assert job_queue._spool_material(p) is None      # "can't tell", not a crash
+
+
+def test_updating_a_job_that_left_the_queue_is_refused(tmp_path):
+    job = job_queue.add_job(_gcode(tmp_path), "a.gcode", {})
+    jobs = job_queue._load()
+    jobs[0]["status"] = "done"
+    job_queue._save(jobs)
+    with pytest.raises(job_queue.QueueError, match="no longer in the queue"):
+        job_queue.update_job(job["id"], {"priority": 3})
+    # the one exception: cancelling is still possible
+    job_queue.update_job(job["id"], {"status": "cancelled"})
+    assert job_queue.list_jobs()[0]["status"] == "cancelled"
+
+
+def test_a_model_mismatch_on_confirm_refuses_the_send(tmp_path):
+    """Defense in depth: the model is checked at assignment, but a printer
+    type can change between assignment and the confirm press (UI edit)."""
+    import state
+    state.printers["p1"] = FakePrinter("p1", printer_type="cc1")
+    job = job_queue.add_job(_gcode(tmp_path, printer_model="centauri carbon 2"), "a.gcode", {})
+    jobs = job_queue._load()
+    jobs[0]["status"] = "assigned"
+    jobs[0]["assigned_printer_id"] = "p1"
+    job_queue._save(jobs)
+    with pytest.raises(job_queue.QueueError, match="does not look compatible"):
+        run(job_queue.confirm_plate_cleared("p1"))
+    assert job_queue.list_jobs()[0]["status"] == "assigned"
+
+
+def test_a_missing_queue_file_refuses_the_send(tmp_path):
+    import state
+    state.printers["p1"] = FakePrinter("p1")
+    job = job_queue.add_job(_gcode(tmp_path), "a.gcode", {"printer_id": "p1"})
+    job_queue.assign_ready_jobs()
+    (job_queue.QUEUE_DIR / f"{job['id']}.gcode").unlink()
+    with pytest.raises(job_queue.QueueError, match="missing"):
+        run(job_queue.confirm_plate_cleared("p1"))
+
+
+async def test_upload_with_options_uploads_then_starts_separately(tmp_path):
+    import state
+    state.printers["p1"] = FakePrinter("p1")
+    job = job_queue.add_job(_gcode(tmp_path), "a.gcode", {"printer_id": "p1"})
+    job_queue.assign_ready_jobs()
+    opts = {"leveling": True}
+    await job_queue.confirm_plate_cleared("p1", opts)
+    p = state.printers["p1"]
+    assert p.uploaded is not None and p.uploaded[2] is False     # uploaded without start_after
+    assert p.started_opts == opts                                # started separately, options passed
+
+
+async def test_upload_failing_leaves_the_job_assigned(tmp_path):
+    import state
+    p = FakePrinter("p1")
+    p.upload_result = False
+    state.printers["p1"] = p
+    job = job_queue.add_job(_gcode(tmp_path), "a.gcode", {"printer_id": "p1"})
+    job_queue.assign_ready_jobs()
+    with pytest.raises(job_queue.QueueError, match=r"Could not upload the file to the printer\."):
+        await job_queue.confirm_plate_cleared("p1")     # was: "upload succeeded but starting failed" — a lie
+    assert job_queue.list_jobs()[0]["status"] == "assigned"
+    assert p.started is None
+
+
+async def test_start_failing_after_a_good_upload_says_so(tmp_path):
+    import state
+    p = FakePrinter("p1")
+    p.start_result = False
+    state.printers["p1"] = p
+    job = job_queue.add_job(_gcode(tmp_path), "a.gcode", {"printer_id": "p1"})
+    job_queue.assign_ready_jobs()
+    with pytest.raises(job_queue.QueueError, match=r"Upload succeeded but starting the print failed\."):
+        await job_queue.confirm_plate_cleared("p1", {"leveling": False})
+    assert job_queue.list_jobs()[0]["status"] == "assigned"
+    assert p.uploaded is not None and p.started is not None
+
+
+async def test_the_assign_loop_survives_a_failing_cycle(capsys, monkeypatch):
+    """The periodic loop must never die on one bad cycle: the failure is
+    logged and the next cycle still runs."""
+    calls = [0]
+    real_sleep = asyncio.sleep
+
+    async def sleep(t):
+        calls[0] += 1
+        if calls[0] >= 2:
+            raise asyncio.CancelledError                # end the loop after two cycles
+        await real_sleep(0)
+
+    monkeypatch.setattr(job_queue.asyncio, "sleep", sleep)
+
+    def fail_once(now=None):
+        if calls[0] < 2:
+            raise RuntimeError("queue store unreadable")
+
+    monkeypatch.setattr(job_queue, "expire_unstarted", fail_once)
+    with pytest.raises(asyncio.CancelledError):
+        await job_queue.assign_loop()
+    assert calls[0] == 2, "the loop kept cycling past the failure"
+    assert "RuntimeError" in capsys.readouterr().out
+
+
+def test_the_spool_material_resolves_through_the_spoolman_index(monkeypatch):
+    import features
+    import spoolman
+    features.set_enabled("spoolman", True)
+    monkeypatch.setattr(spoolman, "get_spool_index", lambda: {5: {"material": "PLA"}})
+    assert job_queue._spool_material(FakePrinter("p1", tray_spool=5)) == "PLA"
+
+
+def test_model_matching_benefit_of_the_doubt_and_mismatches():
+    assert job_queue._model_matches(None, "cc1") is True            # nothing to compare
+    assert job_queue._model_matches("super slicer output", "cc2") is True   # unknown model: can't tell
+    assert job_queue._model_matches("centauri carbon", "cc1") is True
+    assert job_queue._model_matches("centauri carbon", "cc2") is False  # the prefix trap: longest hint wins
+
+
+def test_job_matching_filters_by_printer_id_and_type():
+    p1 = FakePrinter("p1", printer_type="cc2")
+    assert job_queue._matches({"printer_id": "p1", "printer_type": None, "gcode_printer_model": None}, p1)
+    assert not job_queue._matches({"printer_id": "p2", "printer_type": None, "gcode_printer_model": None}, p1)
+    assert not job_queue._matches({"printer_id": "p1", "printer_type": "cc1", "gcode_printer_model": None}, p1)
+
+
+def test_assigned_job_for_returns_the_printer_one():
+    import json
+    job = {"id": "abc", "status": "assigned", "assigned_printer_id": "p1"}
+    job_queue.QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    job_queue.QUEUE_FILE.write_text(json.dumps([job]))
+    assert job_queue.assigned_job_for("p1")["id"] == "abc"
+    assert job_queue.assigned_job_for("p2") is None
