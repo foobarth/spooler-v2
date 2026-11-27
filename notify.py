@@ -164,7 +164,7 @@ def event_settings(event: str) -> dict:
 
 def shared_on(event: str) -> bool:
     """Switched on in the shared settings, which drive the shared channels
-    (ntfy, Telegram, Discord, webhook) and devices of users without own choices."""
+    (ntfy, Telegram, Discord, webhook, MQTT) and devices of users without own choices."""
     return bool(event_settings(event).get("enabled"))
 
 

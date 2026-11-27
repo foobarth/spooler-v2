@@ -242,6 +242,8 @@ The generic webhook channel (Settings → Notifications → Webhook) sends one J
 
 The same versioning policy as the API applies: within `schema_version` 1, **fields can be added, never removed, renamed or changed in type or meaning**, so ignore fields you don't know. A breaking change gets a new `schema_version`. Delivery is best effort: a webhook that fails is not retried, and each event is sent once per channel, so `id` is there for receivers that also get events some other way. Contract tests (`tests/test_webhook_contract.py`) fail if a field here disappears or changes type.
 
+The MQTT notification channel (Settings → Notifications → MQTT; needs the MQTT integration) publishes the same payload to `spooler/notification` on your MQTT broker. It is **not retained** — only subscribers connected at that moment receive it, each event once per channel, with `id` for deduplication. When the notification carries a camera picture, the JPEG goes to `spooler/notification/image` immediately before the JSON, so a receiver reacting to the JSON finds the picture already there. The same field policy applies to the payload, and a failure (integration off, broker unreachable) is reported through the UI's channel test like every other channel's.
+
 ## Versioning and compatibility
 
 The path carries the version: `/api/external/v1`. Within `v1`:
