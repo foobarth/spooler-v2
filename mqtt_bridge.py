@@ -65,7 +65,7 @@ TYPE_MODELS = {
 
 # (key, component, friendly name, unit, device_class, state_class, nullable, entity_category, icon)
 SENSORS = [
-    ("state",            "sensor", "Status",             None, None,          None,          False, None,        "mdi:printer-3d"),
+    ("state",            "sensor", "Status",             None, "enum",        None,          False, None,        "mdi:printer-3d"),
     ("nozzle_temp",      "sensor", "Nozzle temperature", "°C", "temperature", "measurement", False, None,        None),
     ("nozzle_target",    "sensor", "Nozzle target",      "°C", "temperature", "measurement", False, None,        None),
     ("bed_temp",         "sensor", "Bed temperature",    "°C", "temperature", "measurement", False, None,        None),
@@ -93,6 +93,12 @@ BINARY_SENSORS = [
 # Tray status 0/1/2, verified live 2026-11-24: dynamic state, not static
 # config — the previously active tray moves 2→1 when the active tray changes.
 _TRAY_STATUS = {0: "empty", 1: "loaded", 2: "active"}
+
+# The Status sensor's enum: exactly the display states classify_display_state()
+# can produce (printers/base.py is the source of truth; a test pins the two
+# lists against each other). HA renders these as the sensor's possible values.
+STATE_OPTIONS = ("offline", "idle", "preparing", "printing", "pausing", "paused",
+                 "stopping", "complete", "cancelled", "error", "unknown")
 
 
 def _state_topic(pid: str) -> str:
@@ -167,6 +173,8 @@ def _discovery_messages(pid: str, d: dict):
     for key, component, name, unit, device_class, state_class, nullable, category, icon in SENSORS:
         payload = _entity_payload(pid, d, component, key, name, unit, device_class,
                                   state_class, nullable, category, icon)
+        if key == "state":
+            payload["options"] = list(STATE_OPTIONS)
         yield _discovery_topic(component, pid, key), json.dumps(payload)
     for key, name, extra in BINARY_SENSORS:
         payload = _entity_payload(pid, d, "binary_sensor", key, name, binary=True, **extra)

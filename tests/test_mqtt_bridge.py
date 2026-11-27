@@ -898,6 +898,23 @@ def test_discovery_config_is_ha_quality():
     assert payloads["sensor/firmware_version"]["icon"] == "mdi:chip"
     assert payloads["binary_sensor/connected"]["device_class"] == "connectivity"
     assert payloads["binary_sensor/printing"]["icon"] == "mdi:printer-3d"
+    # the Status sensor is an enum: HA renders the possible values in more-info
+    st = payloads["sensor/state"]
+    assert st["device_class"] == "enum"
+    assert st["options"] == ["offline", "idle", "preparing", "printing", "pausing",
+                             "paused", "stopping", "complete", "cancelled", "error", "unknown"]
+
+
+def test_status_options_match_the_display_state_contract():
+    """The enum's option list must be exactly the display states
+    classify_display_state() can produce — the two lists drift together."""
+    import printers.base as base_mod
+    from printers.base import classify_display_state
+    produced = {classify_display_state(True, code)
+                for code in [*base_mod._DISPLAY_STATE_BY_CODE, None]}
+    produced |= {"offline", "unknown"}          # not connected / unmapped code
+    produced |= {"preparing"}                    # busy_between_prints + code 0
+    assert set(mqtt_bridge.STATE_OPTIONS) == produced
 
 
 async def test_camera_first_grab_is_due_on_a_fresh_boot(broker, monkeypatch):
