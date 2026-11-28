@@ -62,7 +62,7 @@ PROJECTION_KEYS = {"state", "connected", "printing", "nozzle_temp", "nozzle_targ
                    "bed_temp", "bed_target", "chamber_temp", "chamber_target",
                    "fan_part", "fan_aux", "fan_chamber",
                    "progress", "layer", "total_layer", "time_remaining", "time_elapsed",
-                   "filament_mm", "filament_g", "speed_factor", "firmware_version"}
+                   "eta", "filament_mm", "filament_g", "speed_factor", "firmware_version"}
 
 
 # ── discovery on connect ─────────────────────────────────────────────────────
@@ -122,6 +122,40 @@ async def test_connect_announces_the_sensor_set_per_printer(broker, monkeypatch)
         assert f"homeassistant/sensor/p1/{key}/config" in topics, key
     for key in ("connected", "printing"):
         assert f"homeassistant/binary_sensor/p1/{key}/config" in topics, key
+
+
+# ── ETA: the wall-clock finish time, computed server-side ────────────────────
+
+def test_bridge_state_eta_is_the_wall_clock_finish_time():
+    """Mirrors the UI's formatFinishAt anchor (now + remaining) on the
+    server's clock, as ISO 8601 with the local UTC offset — HA's timestamp
+    device class renders it correctly in any timezone."""
+    from datetime import datetime, timedelta
+    pr = PrinterConnection("p1", "192.0.2.5", "Workshop")
+    pr.connected = True
+    pr.status = {"PrintInfo": {"Status": 3, "RemainTime": 88 * 60}}
+    out = mqtt_bridge.bridge_state(pr.to_dict())
+    eta = datetime.fromisoformat(out["eta"])
+    expected = datetime.now().astimezone() + timedelta(seconds=88 * 60)
+    assert abs((eta - expected).total_seconds()) < 5
+    assert eta.tzinfo is not None and eta.utcoffset() is not None
+
+
+def test_bridge_state_eta_is_none_when_nothing_remains():
+    pr = PrinterConnection("p1", "192.0.2.5", "Workshop")
+    pr.connected = True
+    pr.status = {"PrintInfo": {"Status": 0}}       # idle: remaining reads 0
+    assert mqtt_bridge.bridge_state(pr.to_dict())["eta"] is None
+
+
+async def test_eta_sensor_is_announced_as_a_timestamp(broker, monkeypatch):
+    _register_printer(monkeypatch, TempOfNozzle=210)
+    await mqtt_bridge.sync_lifecycle()
+    await broker.wait_for_publish("spooler/p1/state")
+
+    cfg = json.loads(broker.payloads("homeassistant/sensor/p1/eta/config")[-1])
+    assert cfg["device_class"] == "timestamp"
+    assert "value_json.eta" in cfg["value_template"]
 
 
 # ── fan sensors: announced only for printers whose capabilities declare them ─

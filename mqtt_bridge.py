@@ -77,6 +77,7 @@ SENSORS = [
     ("total_layer",      "sensor", "Total layers",       None, None,          "measurement", False, None,        "mdi:layers"),
     ("time_remaining",   "sensor", "Time remaining",     "s",  "duration",    "measurement", False, None,        "mdi:timer"),
     ("time_elapsed",     "sensor", "Time elapsed",       "s",  "duration",    "measurement", False, None,        "mdi:timer-sand"),
+    ("eta",              "sensor", "ETA",                None, "timestamp",   None,          True,  None,        None),
     ("filament_mm",      "sensor", "Filament used",      "mm", None,          "total_increasing", False, None,   "mdi:tape-measure"),
     ("filament_g",       "sensor", "Filament used",      "g",  "weight",      "total_increasing", False, None,    "mdi:weight"),
     ("speed_factor",     "sensor", "Speed factor",       "%",  None,          "measurement", False, None,        "mdi:speedometer"),
@@ -273,6 +274,21 @@ def _canvas_entities(pid: str, d: dict, canvas: dict):
 # printers/base.py to_dict() — the bridge owns none. This is just a whitelist
 # of what the bridge publishes, plus one derived flag.
 
+def _eta_iso(remaining) -> str | None:
+    """Wall-clock finish time: now + remaining on the server's clock (the
+    same anchor the browser's formatFinishAt uses), as ISO 8601 with the
+    local UTC offset so any receiver — HA's timestamp device class included
+    — interprets it unambiguously. None when nothing remains."""
+    try:
+        rem = float(remaining)
+    except (TypeError, ValueError):
+        return None
+    if rem <= 0:
+        return None
+    from datetime import datetime, timedelta
+    return (datetime.now().astimezone() + timedelta(seconds=rem)).isoformat()
+
+
 def bridge_state(printer: dict) -> dict:
     """Thin projection of a printer's to_dict() for the state topic."""
     out = {
@@ -293,6 +309,10 @@ def bridge_state(printer: dict) -> dict:
         "total_layer":      printer.get("total_layer"),
         "time_remaining":   printer.get("time_remaining"),
         "time_elapsed":     printer.get("time_elapsed"),
+        # ETA: the UI's formatFinishAt anchor (now + remaining) computed on
+        # the server's clock, ISO 8601 with the local UTC offset — HA's
+        # timestamp device class renders it correctly in any timezone.
+        "eta":              _eta_iso(printer.get("time_remaining")),
         "filament_mm":      printer.get("filament_mm"),
         "filament_g":       printer.get("filament_g"),
         "speed_factor":     printer.get("speed_factor"),
