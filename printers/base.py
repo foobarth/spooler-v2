@@ -493,6 +493,11 @@ class PrinterConnection:
         try:
             while True:
                 await self.connect()
+                # The status-frame path arms the offline timer too, but a
+                # printer that is already down sends no frames: without this,
+                # printer_offline/printer_online stay silent around a
+                # Spooler restart (observed live 2026-11-28).
+                self._track_connection_for_notifications()
                 if not self.connected:
                     self._plog("Retrying in 5 s …")
                 await asyncio.sleep(5)

@@ -373,6 +373,55 @@ async def test_offline_notice_comes_after_delay_and_online_after_return(printer,
 
 
 @pytest.mark.asyncio
+async def test_offline_at_startup_arms_the_notice_through_the_connection_loop(printer, monkeypatch):
+    """A printer that is ALREADY offline when Spooler starts sends no status
+    frames, so the offline timer never armed — neither printer_offline nor
+    the later printer_online ever fired. Observed live 2026-11-28: the
+    printer was powered down across a Spooler restart, both notices stayed
+    silent. The connection loop itself must arm the tracker."""
+    import printers.base as base
+    monkeypatch.setattr(notify, "event_settings", lambda event: {"minutes": 5})
+    real_sleep = asyncio.sleep
+
+    async def fast_sleep(t):
+        await real_sleep(0)
+
+    monkeypatch.setattr(base.asyncio, "sleep", fast_sleep)
+
+    attempts = 0
+    proceed = asyncio.Event()
+
+    async def connect_seq():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            printer.connected = False
+            await real_sleep(0.06)      # let the armed offline task fire
+        elif attempts == 2:
+            printer.connected = False
+            await proceed.wait()        # hold: the test asserts the offline state first
+        else:
+            printer.connected = True
+
+    printer.connect = connect_seq
+
+    async def runner():
+        try:
+            await printer.start()
+        except asyncio.CancelledError:
+            pass
+
+    task = asyncio.create_task(runner())
+    await real_sleep(0.2)           # two failed attempts: the notice armed and fired
+    assert [n.event for n in printer.captured] == ["printer_offline"]
+    proceed.set()                   # third attempt reconnects
+    await real_sleep(0.1)
+    assert [n.event for n in printer.captured] == ["printer_offline", "printer_online"]
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_quick_reconnect_cancels_offline_notice(printer, monkeypatch):
     monkeypatch.setattr(notify, "event_settings", lambda event: {"minutes": 5})
     printer.connected = False

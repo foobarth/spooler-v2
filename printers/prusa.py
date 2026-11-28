@@ -76,6 +76,7 @@ class PrusaConnection(PrinterConnection):
                 if not self.connected:
                     self.connected = True
                     print(f"[Printer {self.name}] Connected!")
+                    self._track_connection_for_notifications()
                     await self._fetch_version()
                     await self._broadcast_state()
                 self._apply_status(status_data, job_data)
@@ -88,6 +89,7 @@ class PrusaConnection(PrinterConnection):
                 if self.connected:
                     self.connected = False
                     await self._broadcast_state()
+                self._track_connection_for_notifications()
                 await asyncio.sleep(POLL_INTERVAL * 3)
                 continue
             await asyncio.sleep(POLL_INTERVAL)
