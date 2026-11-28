@@ -364,9 +364,11 @@ async def _camera_tick(client, wanted) -> None:
     offline. The idle feed is not a nicety: HA's MQTT camera holds no image
     until the first frame arrives (MqttCamera._last_image starts None), so
     a print-gated feed rendered the entity broken on an idle printer —
-    observed in real HA 2026-11-26. Frames are not retained — a stale frame
-    must not outlive the stream. A lifecycle change ends the round at
-    printer granularity; the in-flight grab (executor, ~5 s) is
+    observed in real HA 2026-11-26. Frames are retained — every join shows
+    the latest picture instantly (feature toggle, broker restart, entity
+    reload); the stream-over clear below empties the retained frame so a
+    stale picture never outlives the stream. A lifecycle change ends the
+    round at printer granularity; the in-flight grab (executor, ~5 s) is
     uncancellable."""
     loop = asyncio.get_running_loop()
     now = time.monotonic()
