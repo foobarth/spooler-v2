@@ -1,5 +1,12 @@
 [
   {
+    "version": "2.4.0-beta.23",
+    "date": "2026-11-28",
+    "changes": [
+      "Nozzle cooled down becomes its own settings entry with its own temperature, instead of a switch tucked under the hot-nozzle warning — the two were never coupled, and a switch saved under the old spot needs re-enabling under its own row"
+    ]
+  },
+  {
     "version": "2.4.0-beta.22",
     "date": "2026-11-28",
     "changes": [

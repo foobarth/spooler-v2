@@ -827,25 +827,34 @@ class PrinterConnection:
             else:
                 state.publish("print_complete", printer_id=self.id, printer=self.to_dict(), data={"filename": fname})
 
-        if is_idle and (wanted("nozzle_idle") or s.get("nozzle_idle", {}).get("cooled", False)):
+        if is_idle and wanted("nozzle_idle"):
             thr = s.get("nozzle_idle", {}).get("threshold", 50)
-            if nozzle > thr:
-                if wanted("nozzle_idle") and not ns["nozzle_idle_fired"]:
-                    state.publish("nozzle_hot_idle", printer_id=self.id, printer=self.to_dict(), data={"temp": nozzle})
-                    ns["nozzle_idle_fired"] = True
-                ns["nozzle_hot_seen"] = True
+            if nozzle > thr and not ns["nozzle_idle_fired"]:
+                state.publish("nozzle_hot_idle", printer_id=self.id, printer=self.to_dict(), data={"temp": nozzle})
+                ns["nozzle_idle_fired"] = True
             elif nozzle <= thr - 5:          # a few degrees of margin so a reading hovering at the limit can't repeat it
-                # The cooled mirror: armed hot while idle, fires exactly once on
-                # the crossing below. The flag survives a print that starts
-                # while hot — the whole hot stretch ends with one cooled event.
-                if ns.get("nozzle_hot_seen") and s.get("nozzle_idle", {}).get("cooled", False):
-                    state.publish("nozzle_cooled", printer_id=self.id, printer=self.to_dict(), data={"temp": nozzle})
-                ns["nozzle_hot_seen"] = False
                 ns["nozzle_idle_fired"] = False
         elif is_printing or nozzle <= s.get("nozzle_idle", {}).get("threshold", 50) - 5:
             # Re-arm only when a print starts or the nozzle has cooled: a status that
             # flickers away from idle for a moment (preparing, busy) must not repeat the warning.
             ns["nozzle_idle_fired"] = False
+
+        # Nozzle cooled: its own block and threshold. Armed hot while idle,
+        # fires exactly once on the crossing below. The flag survives a print
+        # that starts while hot — the whole hot stretch ends with one cooled
+        # event. The physical dependency is deliberate: without it, every cold
+        # printer would announce "cooled down" at boot.
+        if wanted("nozzle_cooled"):
+            cthr = s.get("nozzle_cooled", {}).get("threshold", 50)
+            if is_idle:
+                if nozzle > cthr:
+                    ns["nozzle_hot_seen"] = True
+                elif nozzle <= cthr - 5 and ns.get("nozzle_hot_seen"):
+                    state.publish("nozzle_cooled", printer_id=self.id, printer=self.to_dict(), data={"temp": nozzle})
+                    ns["nozzle_hot_seen"] = False
+            elif not is_printing and nozzle <= cthr - 5:
+                # A cold crossing off-idle (preparing, busy) isn't news either.
+                ns["nozzle_hot_seen"] = False
 
         # Bed cooled: the bed cools far slower than the nozzle and holds the
         # part — its own threshold block, armed hot in any state, fired once

@@ -762,8 +762,19 @@
           <div class="notif-param" id="notif-nozzle-idle-param" style="display:none">
             <label>Temperature (°C)<input type="number" id="notif-nozzle-idle-threshold" value="50" min="1" max="400" /></label>
           </div>
-          <div class="notif-param">
-            <label class="notif-chip"><input type="checkbox" id="notif-nozzle-idle-cooled" /><span>Notify when the nozzle has cooled below the same temperature</span></label>
+
+          <div class="notif-row">
+            <div class="notif-info">
+              <span class="notif-label">Nozzle cooled down</span>
+              <span class="notif-desc">When the nozzle was hot while idle and has cooled below a set temperature — for power-off automations</span>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="notif-nozzle-cooled-on" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="notif-param" id="notif-nozzle-cooled-param" style="display:none">
+            <label>Temperature (°C)<input type="number" id="notif-nozzle-cooled-threshold" value="50" min="1" max="400" /></label>
           </div>
 
           <div class="notif-row">
@@ -979,7 +990,7 @@
   <script src="/config.js"></script>
   <script src="app-core.js?v=94"></script>
   <script src="app-render.js?v=92"></script>
-  <script src="app-settings.js?v=96"></script>
+  <script src="app-settings.js?v=97"></script>
   <script src="app-files.js?v=91"></script>
   <script src="app-integrations.js?v=99"></script>
   <script src="app-stats.js?v=90"></script>
