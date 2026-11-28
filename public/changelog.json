@@ -1,5 +1,13 @@
 [
   {
+    "version": "2.4.0-beta.24",
+    "date": "2026-11-28",
+    "changes": [
+      "New ETA sensor: the print's finish time as a wall clock in the server's timezone, on the state topic and as a Home Assistant timestamp entity",
+      "Fix: the cooled-down notifications fire at the temperature you set — they fired 5 degrees below it"
+    ]
+  },
+  {
     "version": "2.4.0-beta.23",
     "date": "2026-11-28",
     "changes": [
