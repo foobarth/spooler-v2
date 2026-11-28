@@ -19,6 +19,7 @@ class RecordedPublish:
     topic: str
     payload: bytes
     retain: bool = False
+    qos: int = 0
 
 
 @dataclass
@@ -110,11 +111,20 @@ class FakeBroker:
                     await writer.drain()
                 elif ptype == 3:    # PUBLISH
                     topic, offset = _parse_string(body, 0)
-                    if flags & 0x06:                    # QoS 1/2 — not supported
-                        raise _ProtocolError(f"QoS > 0 publish on {topic!r}")
-                    payload = body[offset:]             # QoS 0: payload runs to the end
+                    qos = (flags >> 1) & 0x03
+                    if qos == 2:
+                        raise _ProtocolError(f"QoS 2 publish on {topic!r} — unsupported")
+                    if qos == 1:                        # packet id follows the topic
+                        packet_id = body[offset:offset + 2]
+                        payload = body[offset + 2:]
+                    else:
+                        packet_id = None
+                        payload = body[offset:]         # QoS 0: payload runs to the end
                     self.publishes.append(
-                        RecordedPublish(topic, payload, retain=bool(flags & 0x01)))
+                        RecordedPublish(topic, payload, retain=bool(flags & 0x01), qos=qos))
+                    if qos == 1:
+                        writer.write(b"\x40\x02" + packet_id)   # PUBACK — the ack is the completion
+                        await writer.drain()
                 elif ptype == 12:   # PINGREQ
                     writer.write(b"\xd0\x00")           # PINGRESP
                     await writer.drain()

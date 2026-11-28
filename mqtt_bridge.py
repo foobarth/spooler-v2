@@ -803,22 +803,24 @@ async def _clear_records():
             hostname=broker[0], port=broker[1], identifier=_client_id,
             username=broker[2], password=broker[3],
         ) as client:
-            await client.publish(BRIDGE_AVAILABILITY, b"", retain=True, timeout=PUBLISH_TIMEOUT_S)
+            # QoS-1: publish() then awaits the broker's PUBACK, so a completed
+            # sweep is broker-confirmed — the ledger-empty ack below is exact.
+            # QoS-0 empties handed to aiomqtt's writer task made the ack
+            # aspirational (a grace-sleep guess that raced under load — the
+            # discovery-toggle flake).
+            await client.publish(BRIDGE_AVAILABILITY, b"", qos=1, retain=True, timeout=PUBLISH_TIMEOUT_S)
             # the notification sensor's config: its node ("spooler") is not a
             # printer pid, so the superset sweep below never touches it
             await client.publish(_discovery_topic("sensor", "spooler", "notification"),
-                                 b"", retain=True, timeout=PUBLISH_TIMEOUT_S)
+                                 b"", qos=1, retain=True, timeout=PUBLISH_TIMEOUT_S)
             # the registry superset for every printer we know of — the ledger's
             # exact topics are a subset, so this also sweeps what a previous
             # instance published and this one never re-announced
             for pid in set(state.printers) | set(_discovered) | set(_published):
                 for topic in _superset_discovery_topics(pid):
-                    await client.publish(topic, b"", retain=True, timeout=PUBLISH_TIMEOUT_S)
-                await client.publish(_state_topic(pid), b"", retain=True, timeout=PUBLISH_TIMEOUT_S)
-                await client.publish(_camera_topic(pid), b"", retain=True, timeout=PUBLISH_TIMEOUT_S)
-            # QoS-0 publishes are handed to aiomqtt's loop task; leaving the
-            # context immediately would drop whatever it hasn't written yet.
-            await asyncio.sleep(0.25)
+                    await client.publish(topic, b"", qos=1, retain=True, timeout=PUBLISH_TIMEOUT_S)
+                await client.publish(_state_topic(pid), b"", qos=1, retain=True, timeout=PUBLISH_TIMEOUT_S)
+                await client.publish(_camera_topic(pid), b"", qos=1, retain=True, timeout=PUBLISH_TIMEOUT_S)
     except aiomqtt.MqttError as e:
         print(f"[Bridge] Broker unreachable, retained discovery not cleared yet "
               f"({type(e).__name__}: {e}) — retrying")

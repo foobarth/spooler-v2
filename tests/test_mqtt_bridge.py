@@ -528,6 +528,26 @@ async def test_lwt_declared_and_offline_fires_when_the_connection_dies(broker, m
 
 # ── turning off: "off means off" — entities vanish, not go stale ────────────
 
+async def test_the_off_clear_empties_are_broker_confirmed(broker, monkeypatch):
+    """The off-clear's empties must be QoS-1: publish() then awaits the
+    broker's PUBACK, so a completed sweep is confirmed, not guessed with a
+    grace sleep. QoS-0 empties left a flush race — the discovery-toggle
+    flake: the readiness probe (an early topic's empty) fired while the
+    later canvas empties were still in flight."""
+    _register_printer(monkeypatch, canvas_info=CANVAS_INFO)
+    await mqtt_bridge.sync_lifecycle()
+    await broker.wait_for_publish("spooler/p1/state")
+
+    config_set("mqtt.home_assistant", False)
+    # The sweep's LAST topic: when its empty has arrived, the sweep is done.
+    await _wait_for_payload(broker, "homeassistant/sensor/p1/canvas_tray7_color/config", b"")
+
+    cleared = [p for p in broker.publishes if p.topic.startswith("homeassistant/") and p.payload == b""]
+    assert cleared, "the off-clear published no empties"
+    bad = [(p.topic, p.qos) for p in cleared if p.qos != 1]
+    assert not bad, f"non-broker-confirmed empties: {bad}"
+
+
 async def test_turning_off_empties_every_retained_topic(broker, monkeypatch):
     _register_printer(monkeypatch, canvas_info=CANVAS_INFO)
     await mqtt_bridge.sync_lifecycle()
@@ -747,7 +767,9 @@ async def test_flipping_the_discovery_toggle_is_a_real_transition(broker, monkey
 
     config_set("mqtt.home_assistant", False)
     await mqtt_bridge.sync_lifecycle()
-    await _wait_for_payload(broker, "homeassistant/sensor/p1/nozzle_temp/config", b"")
+    # The sweep's LAST topic gates readiness: an early topic's empty (the
+    # old nozzle_temp probe) races the canvas empties, which publish last.
+    await _wait_for_payload(broker, "homeassistant/sensor/p1/canvas_tray7_color/config", b"")
     ha = {p.topic for p in broker.publishes if p.topic.startswith("homeassistant/")}
     for topic in ha:
         assert broker.payloads(topic)[-1] == b"", f"{topic} was not cleared"
