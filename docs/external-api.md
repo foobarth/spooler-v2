@@ -233,7 +233,7 @@ The generic webhook channel (Settings → Notifications → Webhook) sends one J
 | `schema_version` | integer | Version of this payload format. Currently `1`. |
 | `id` | string | A unique id (UUID) for the event. The same event always carries the same id, so a receiver can tell it has already seen it. |
 | `timestamp` | string | When the event happened, ISO 8601 in UTC (`...Z`). |
-| `event` | string | `print_started`, `print_complete`, `print_cancelled`, `print_paused`, `print_error`, `filament_runout`, `printer_offline`, `printer_online`, `firmware_changed`, `nozzle_hot_idle`, `nozzle_overheat`, `layer_reached`, `spool_low`, or `test` |
+| `event` | string | `print_started`, `print_complete`, `print_cancelled`, `print_paused`, `print_error`, `filament_runout`, `printer_fault`, `printer_offline`, `printer_online`, `firmware_changed`, `nozzle_hot_idle`, `nozzle_cooled`, `bed_cooled`, `nozzle_overheat`, `layer_reached`, `spool_low`, `service_due`, `spaghetti`, or `test` |
 | `printer_id`, `printer` | string | The printer's id and name. |
 | `title`, `body`, `priority` | string | The notification text; `priority` is `low`, `default`, `high` or `urgent`. |
 | `time` | string | Local time with offset (kept for older receivers; prefer `timestamp`). |

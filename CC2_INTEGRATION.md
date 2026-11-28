@@ -92,6 +92,13 @@ result.external_device.camera          → camera present flag            ⚠️
 result.file_list[].layer               → total layers (look up by filename) ⚠️
 ```
 
+**No `pausing` state (observed live 2026-11-27, soak pause/resume print):** the
+firmware jumps straight `printing` → `paused` — a UI-initiated pause produced
+zero `pausing` status frames. Spooler's display table keeps numeric 5 →
+"pausing" defensively (SDCP heritage), but CC2 state strings never produce it;
+a watcher that expects a pausing transition will see none, and that is correct
+behavior, not a dropped update.
+
 **Partial-update quirk:** ✅ status messages are sometimes *partial* — a frame may
 contain only `gcode_move` and `print_status`, not the full object. Do **not**
 replace your accumulated state with each message; **deep-merge** into it instead,

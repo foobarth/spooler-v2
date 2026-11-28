@@ -60,6 +60,7 @@ async def test_sync_lifecycle_connects_to_broker(broker):
 
 PROJECTION_KEYS = {"state", "connected", "printing", "nozzle_temp", "nozzle_target",
                    "bed_temp", "bed_target", "chamber_temp", "chamber_target",
+                   "fan_part", "fan_aux", "fan_chamber",
                    "progress", "layer", "total_layer", "time_remaining", "time_elapsed",
                    "filament_mm", "filament_g", "speed_factor", "firmware_version"}
 
@@ -121,6 +122,58 @@ async def test_connect_announces_the_sensor_set_per_printer(broker, monkeypatch)
         assert f"homeassistant/sensor/p1/{key}/config" in topics, key
     for key in ("connected", "printing"):
         assert f"homeassistant/binary_sensor/p1/{key}/config" in topics, key
+
+
+# ── fan sensors: announced only for printers whose capabilities declare them ─
+
+async def test_fan_sensors_are_announced_for_printers_that_declare_the_capability(broker, monkeypatch):
+    pr = _register_printer(monkeypatch, FanSpeed={"part": 85, "aux": 0, "chamber": 100})
+    pr.capabilities = frozenset({"temp_nozzle", "fan_part", "fan_aux", "fan_chamber"})
+    await mqtt_bridge.sync_lifecycle()
+    await broker.wait_for_publish("spooler/p1/state")
+
+    for key in ("fan_part", "fan_aux", "fan_chamber"):
+        cfg = await broker.wait_for_publish(f"homeassistant/sensor/p1/{key}/config")
+        payload = json.loads(cfg.payload)
+        assert payload["unit_of_measurement"] == "%", key
+        assert f"value_json.{key}" in payload["value_template"], key
+        assert payload["unique_id"] == f"spooler-p1-{key}", key
+
+
+async def test_fan_sensors_are_absent_without_the_capability(broker, monkeypatch):
+    """Raw fan data without the declared capability must not create entities —
+    a printer that only reports speed sometimes shouldn't grow fan entities."""
+    _register_printer(monkeypatch, FanSpeed={"part": 85})
+    await mqtt_bridge.sync_lifecycle()
+    await broker.wait_for_publish("spooler/p1/state")
+
+    topics = {p.topic for p in broker.topics("homeassistant")}
+    assert not [t for t in topics if "/fan_" in t], topics
+
+
+async def test_off_clear_sweeps_stale_fan_topics_from_a_previous_instance(broker, monkeypatch):
+    """A previous instance may have announced fan entities (different code, a
+    printer whose capabilities changed) — the registry superset sweeps them
+    even though this one never announces them."""
+    import aiomqtt
+
+    _register_printer(monkeypatch)      # no fan capabilities in this state
+    async with aiomqtt.Client(hostname="127.0.0.1", port=broker.port,
+                              identifier="previous-instance") as seed:
+        for key in ("fan_part", "fan_chamber"):
+            await seed.publish(f"homeassistant/sensor/p1/{key}/config",
+                               b'{"name": "stale"}', retain=True, timeout=5.0)
+        await asyncio.sleep(0.2)
+
+    await mqtt_bridge.sync_lifecycle()
+    await broker.wait_for_publish("spooler/p1/state")
+
+    config_set("mqtt.url", "")
+    await mqtt_bridge.sync_lifecycle()
+
+    for key in ("fan_part", "fan_chamber"):
+        topic = f"homeassistant/sensor/p1/{key}/config"
+        assert broker.payloads(topic)[-1] == b"", f"{topic} (stale) survived the off-clear"
 
 
 async def test_state_topic_publishes_the_canonical_projection(broker, monkeypatch):

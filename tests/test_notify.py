@@ -462,6 +462,113 @@ def test_hot_nozzle_idle_warns_once_even_if_the_status_flickers():
     assert p.emitted.count("nozzle_hot_idle") == 2
 
 
+# ── cooled-down events: the mirror of the hot-idle warning ───────────────────
+
+def test_nozzle_cooled_fires_once_on_the_hot_to_cool_transition():
+    """Armed hot while idle, fires exactly on the crossing below
+    (threshold - 5), silent on re-arm — and independent of the hot-idle
+    switch, so the user can have the cooled event without the warning."""
+    push.save_notif_settings({"nozzle_idle": {"enabled": False, "cooled": True, "threshold": 50}})
+    p = PrinterConnection("pid1", "10.0.0.5", "Bench")
+    p.emitted = []
+    _record_events(p)
+
+    def at(status, nozzle):
+        p.status = {"PrintInfo": {"Status": status}, "TempOfNozzle": nozzle}
+        p._check_notifications()
+
+    at(0, 40)                                   # never hot: nothing
+    assert p.emitted.count("nozzle_cooled") == 0
+    at(0, 120)                                  # hot while idle: armed
+    at(0, 48)                                   # hovering between thr-5 and thr
+    at(0, 44)                                   # cooled below thr - 5: fire
+    assert p.emitted.count("nozzle_cooled") == 1
+    assert p.emitted.count("nozzle_hot_idle") == 0   # hot-idle switch is off
+    at(0, 44); at(0, 46)
+    assert p.emitted.count("nozzle_cooled") == 1     # hovering does not repeat
+    at(0, 120); at(0, 40)                            # re-armed and cooled again
+    assert p.emitted.count("nozzle_cooled") == 2
+
+
+def test_nozzle_cooled_tracks_through_a_print_that_starts_while_hot():
+    """The hot flag survives a print starting while hot (no idle reading in
+    between), so the cooled event still announces the end of the whole hot
+    stretch — but it never fires while the printer is busy mid-print."""
+    push.save_notif_settings({"nozzle_idle": {"enabled": False, "cooled": True, "threshold": 50}})
+    p = PrinterConnection("pid1", "10.0.0.5", "Bench")
+    p.emitted = []
+    _record_events(p)
+
+    def at(status, nozzle):
+        p.status = {"PrintInfo": {"Status": status}, "TempOfNozzle": nozzle}
+        p._check_notifications()
+
+    at(0, 120)          # idle hot: armed
+    at(3, 210)          # print starts, still hot
+    at(15, 170)         # busy flicker mid-print
+    at(0, 44)           # print over, first idle reading is already cooled
+    assert p.emitted.count("nozzle_cooled") == 1
+
+
+def test_bed_cooled_fires_once_when_the_bed_crosses_below_the_threshold():
+    """The bed cools far slower than the nozzle and holds the part: its own
+    threshold block, armed hot (any state), fired once below threshold - 5
+    once the printer is no longer printing."""
+    push.save_notif_settings({"bed_cooled": {"enabled": True, "threshold": 50}})
+    p = PrinterConnection("pid1", "10.0.0.5", "Bench")
+    p.emitted = []
+    _record_events(p)
+
+    def at(status, bed):
+        p.status = {"PrintInfo": {"Status": status}, "TempOfHotbed": bed}
+        p._check_notifications()
+
+    at(0, 30)           # cold start: nothing
+    assert p.emitted.count("bed_cooled") == 0
+    at(3, 60)           # printing, bed hot: armed
+    at(0, 55)           # done, still hot
+    at(0, 46)           # hovering
+    at(0, 44)           # below threshold - 5: fire
+    assert p.emitted.count("bed_cooled") == 1
+    at(0, 44)
+    assert p.emitted.count("bed_cooled") == 1   # once
+
+
+def test_bed_cooled_does_not_fire_while_still_printing():
+    push.save_notif_settings({"bed_cooled": {"enabled": True, "threshold": 50}})
+    p = PrinterConnection("pid1", "10.0.0.5", "Bench")
+    p.emitted = []
+    _record_events(p)
+
+    def at(status, bed):
+        p.status = {"PrintInfo": {"Status": status}, "TempOfHotbed": bed}
+        p._check_notifications()
+
+    at(3, 60)           # printing, bed hot: armed
+    at(3, 44)           # bed falls below threshold - 5 mid-print: not news
+    assert p.emitted.count("bed_cooled") == 0
+    at(0, 44)           # idle again
+    assert p.emitted.count("bed_cooled") == 1
+
+
+def test_the_cooled_events_are_switched_by_their_own_settings():
+    """nozzle_cooled rides the nozzle_idle block's 'cooled' flag, not the
+    block's hot-idle switch; bed_cooled is its own block."""
+    push.save_notif_settings({"nozzle_idle": {"enabled": True, "cooled": False},
+                              "bed_cooled": {"enabled": False}})
+    assert notify.is_event_on("nozzle_hot_idle")
+    assert not notify.is_event_on("nozzle_cooled")
+    assert not notify.shared_on("nozzle_cooled")
+    assert not notify.shared_on("bed_cooled")
+
+    push.save_notif_settings({"nozzle_idle": {"enabled": False, "cooled": True},
+                              "bed_cooled": {"enabled": True}})
+    assert not notify.is_event_on("nozzle_hot_idle")
+    assert notify.is_event_on("nozzle_cooled")
+    assert notify.shared_on("nozzle_cooled")
+    assert notify.shared_on("bed_cooled")
+
+
 def test_print_complete_is_announced_even_if_the_printer_is_busy_just_before_it_goes_idle():
     """Real CC2: history was saved but no 'complete' notification came; its last status before idle was a busy one."""
     push.save_notif_settings({"finished": {"enabled": True}})
@@ -584,6 +691,8 @@ RENDER_CASES = [
     ("printer_offline", "Bench", {"minutes": 7.5},
      ("Bench — Printer offline", "No contact with the printer for 7.5 minutes.")),
     ("nozzle_hot_idle", "Bench", {"temp": 60.4}, ("Bench — Nozzle hot", "Nozzle is 60°C while idle.")),
+    ("nozzle_cooled", "Bench", {"temp": 47.2}, ("Bench — Nozzle cooled down", "Nozzle is down to 47°C.")),
+    ("bed_cooled", "Bench", {"temp": 38.6}, ("Bench — Bed cooled down", "Bed is down to 39°C.")),
     ("nozzle_overheat", "Bench", {"temp": 270.5}, ("Bench — Nozzle overheat", "Nozzle is 270°C during print.")),
     ("layer_reached", "Bench", {"layer": 12, "target": 10}, ("Bench — Layer 10 reached", "Currently on layer 12.")),
     ("firmware_changed", "Bench", {"from": "1.0", "to": "1.1", "tested": True},

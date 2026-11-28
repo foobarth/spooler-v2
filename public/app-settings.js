@@ -435,7 +435,7 @@ async function _loadMyChannels() {
 const _canManageNotif = () => (window.SPOOLER_PERMS || []).includes("settings.manage");
 
 // Setting key behind each switch on the page.
-const _notifEventKeys = () => ["finished", "layer", "nozzle_idle", "nozzle_printing", "spool_low",
+const _notifEventKeys = () => ["finished", "layer", "nozzle_idle", "nozzle_printing", "bed_cooled", "spool_low",
                                ..._EXTRA_NOTIF_EVENTS.map(ev => ev.key)];
 
 async function _populateNotifForm() {
@@ -463,8 +463,11 @@ async function _populateNotifForm() {
   set("notif-layer-image",               s.layer?.image             ?? false);
   set("notif-nozzle-idle-on",            s.nozzle_idle?.enabled     ?? false);
   set("notif-nozzle-idle-threshold",     s.nozzle_idle?.threshold   ?? 50);
+  set("notif-nozzle-idle-cooled",        s.nozzle_idle?.cooled      ?? false);
   set("notif-nozzle-printing-on",        s.nozzle_printing?.enabled ?? false);
   set("notif-nozzle-printing-threshold", s.nozzle_printing?.threshold ?? 260);
+  set("notif-bed-cooled-on",             s.bed_cooled?.enabled      ?? false);
+  set("notif-bed-cooled-threshold",      s.bed_cooled?.threshold    ?? 40);
   set("notif-spool-low-on",              s.spool_low?.enabled       ?? false);
   set("notif-spool-low-threshold",       s.spool_low?.threshold     ?? 100);
   set("notif-finished-image",            s.finished?.image          ?? false);
@@ -482,10 +485,11 @@ function _syncNotifParams() {
   show("notif-layer-param",           "notif-layer-on");
   show("notif-nozzle-idle-param",     "notif-nozzle-idle-on");
   show("notif-nozzle-printing-param", "notif-nozzle-printing-on");
+  show("notif-bed-cooled-param",      "notif-bed-cooled-on");
   show("notif-spool-low-param",       "notif-spool-low-on");
 }
 
-["notif-layer-on","notif-nozzle-idle-on","notif-nozzle-printing-on","notif-spool-low-on"].forEach(id =>
+["notif-layer-on","notif-nozzle-idle-on","notif-nozzle-printing-on","notif-bed-cooled-on","notif-spool-low-on"].forEach(id =>
   document.getElementById(id)?.addEventListener("change", _syncNotifParams));
 
 document.getElementById("btn-settings-goto-notifications")?.addEventListener("click", () => {
@@ -612,8 +616,10 @@ document.getElementById("btn-notif-save")?.addEventListener("click", async () =>
   const s = {
     finished:        { enabled: gb("notif-finished-on"), image: gb("notif-finished-image") },
     layer:           { enabled: gb("notif-layer-on"),           layer:     gv("notif-layer-number"), image: gb("notif-layer-image") },
-    nozzle_idle:     { enabled: gb("notif-nozzle-idle-on"),     threshold: gv("notif-nozzle-idle-threshold") },
+    nozzle_idle:     { enabled: gb("notif-nozzle-idle-on"),     threshold: gv("notif-nozzle-idle-threshold"),
+                       cooled: gb("notif-nozzle-idle-cooled") },
     nozzle_printing: { enabled: gb("notif-nozzle-printing-on"), threshold: gv("notif-nozzle-printing-threshold") },
+    bed_cooled:      { enabled: gb("notif-bed-cooled-on"),      threshold: gv("notif-bed-cooled-threshold") },
     spool_low:       { enabled: gb("notif-spool-low-on"),       threshold: gv("notif-spool-low-threshold") },
     ..._collectExtraNotifEvents(),
   };

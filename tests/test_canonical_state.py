@@ -43,6 +43,31 @@ def test_canonical_keys_read_cc2_names():
             d["bed_target"], d["chamber_temp"]) == (1, 2, 3, 4, 5)
 
 
+def test_canonical_fan_keys_read_the_status_fanspeed_block():
+    """CC1 and CC2 both put fan percents into status['FanSpeed'] under the
+    spooler names (part/aux/chamber) — the canonical keys project them like
+    every other numeric."""
+    d = _p({"FanSpeed": {"part": 85, "aux": 0, "chamber": 100}}).to_dict()
+    assert (d["fan_part"], d["fan_aux"], d["fan_chamber"]) == (85, 0, 100)
+
+
+def test_canonical_fan_keys_absent_read_zero():
+    """A protocol without fan data (PrusaLink, Moonraker today) reads 0 like
+    the temps do; consumers gate fan entities on capabilities, not values."""
+    d = _p({"NozzleTemp": 1}).to_dict()
+    assert (d["fan_part"], d["fan_aux"], d["fan_chamber"]) == (0, 0, 0)
+
+
+def test_canonical_fan_keys_of_an_offline_printer_read_zero():
+    """An offline printer's last readings are history, not a measurement —
+    same rule as the canonical temps."""
+    p = PrinterConnection("p1", "192.0.2.5", "Workshop")
+    p.connected = False
+    p.status = {"FanSpeed": {"part": 85, "aux": 0, "chamber": 100}}
+    d = p.to_dict()
+    assert (d["fan_part"], d["fan_aux"], d["fan_chamber"]) == (0, 0, 0)
+
+
 def test_speed_factor_reads_the_cc1_print_speed_pct():
     # Review reproduction: a CC1 printing at 160 % must not report 100 —
     # SpeedFactor belongs to CC2/Moonraker/PrusaLink, PrintSpeedPct to CC1.

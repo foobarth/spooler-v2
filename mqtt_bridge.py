@@ -81,7 +81,16 @@ SENSORS = [
     ("filament_g",       "sensor", "Filament used",      "g",  "weight",      "total_increasing", False, None,    "mdi:weight"),
     ("speed_factor",     "sensor", "Speed factor",       "%",  None,          "measurement", False, None,        "mdi:speedometer"),
     ("firmware_version", "sensor", "Firmware",           None, None,          None,          True,  "diagnostic", "mdi:chip"),
+] + [
+    # Fan percents ride the same projection (CC1/CC2 put them into
+    # status['FanSpeed']); announced only for printers whose capabilities
+    # declare them (see FAN_KEYS below), so Prusa/Moonraker printers get none.
+    (key, "sensor", name, "%", None, "measurement", False, None, icon)
+    for key, name, icon in (("fan_part",    "Part fan",    "mdi:fan"),
+                            ("fan_aux",     "Aux fan",     "mdi:fan"),
+                            ("fan_chamber", "Chamber fan", "mdi:fan"))
 ]
+_FAN_KEYS = {"fan_part", "fan_aux", "fan_chamber"}
 
 # (key, friendly name, extra discovery fields) — device_class gives the icon
 # and the on/off wording in HA; plain icons where no class fits.
@@ -170,7 +179,10 @@ def _entity_payload(pid: str, d: dict, component: str, key: str, name: str,
 
 def _discovery_messages(pid: str, d: dict):
     """(topic, json payload) for every discovered entity of one printer."""
+    caps = set(d.get("capabilities") or ())
     for key, component, name, unit, device_class, state_class, nullable, category, icon in SENSORS:
+        if key in _FAN_KEYS and key not in caps:
+            continue
         payload = _entity_payload(pid, d, component, key, name, unit, device_class,
                                   state_class, nullable, category, icon)
         if key == "state":
@@ -273,6 +285,9 @@ def bridge_state(printer: dict) -> dict:
         "bed_target":       printer.get("bed_target"),
         "chamber_temp":     printer.get("chamber_temp"),
         "chamber_target":   printer.get("chamber_target"),
+        "fan_part":         printer.get("fan_part"),
+        "fan_aux":          printer.get("fan_aux"),
+        "fan_chamber":      printer.get("fan_chamber"),
         "progress":         printer.get("progress"),
         "layer":            printer.get("layer"),
         "total_layer":      printer.get("total_layer"),

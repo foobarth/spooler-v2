@@ -35,12 +35,18 @@ EVENT_SETTING = {
     "printer_online":  "offline",
     "firmware_changed": "firmware",
     "nozzle_hot_idle": "nozzle_idle",
+    "nozzle_cooled":   "nozzle_idle",   # switched by the block's 'cooled' flag (EVENT_FLAGS)
+    "bed_cooled":      "bed_cooled",
     "nozzle_overheat": "nozzle_printing",
     "layer_reached":   "layer",
     "spool_low":       "spool_low",
     "service_due":     "service",
     "spaghetti":       "spaghetti",
 }
+# Events that share a settings block but switch on their own flag inside it:
+# nozzle_cooled rides nozzle_idle (same threshold both directions), turned on
+# by nozzle_idle.cooled rather than by the block's hot-idle switch.
+EVENT_FLAGS = {"nozzle_cooled": "cooled"}
 # Events that may carry a camera picture (when their setting asks for one).
 IMAGE_EVENTS = {"print_started", "print_complete", "print_cancelled", "print_paused",
                 "print_error", "printer_fault", "filament_runout", "layer_reached", "spaghetti"}
@@ -102,6 +108,10 @@ MESSAGES: dict[str, _Message] = {
                         "body": "No contact with the printer for {minutes:g} minutes."},
     "nozzle_hot_idle": {"title": "{printer} — Nozzle hot",
                         "body": lambda d: f"Nozzle is {round(d['temp'])}°C while idle."},
+    "nozzle_cooled":   {"title": "{printer} — Nozzle cooled down",
+                        "body": lambda d: f"Nozzle is down to {round(d['temp'])}°C."},
+    "bed_cooled":      {"title": "{printer} — Bed cooled down",
+                        "body": lambda d: f"Bed is down to {round(d['temp'])}°C."},
     "nozzle_overheat": {"title": "{printer} — Nozzle overheat",
                         "body": lambda d: f"Nozzle is {round(d['temp'])}°C during print."},
     "layer_reached":   {"title": "{printer} — Layer {target} reached",
@@ -171,10 +181,24 @@ def event_settings(event: str) -> dict:
     return (load_notif_settings().get(key) or {}) if key else {}
 
 
+def _event_switch(event: str, shared_only: bool) -> bool:
+    """The event's own switch: a nested block flag (EVENT_FLAGS), else the
+    block's enabled switch — shared only, or also when any user wants it."""
+    key = EVENT_SETTING.get(event)
+    if key is None:
+        return False
+    flag = EVENT_FLAGS.get(event)
+    if flag is not None:
+        return bool((load_notif_settings().get(key) or {}).get(flag))
+    if shared_only:
+        return bool(event_settings(event).get("enabled"))
+    return key_wanted(key)
+
+
 def shared_on(event: str) -> bool:
     """Switched on in the shared settings, which drive the shared channels
     (ntfy, Telegram, Discord, webhook, MQTT) and devices of users without own choices."""
-    return bool(event_settings(event).get("enabled"))
+    return _event_switch(event, shared_only=True)
 
 
 def key_wanted(key: str) -> bool:
@@ -185,8 +209,7 @@ def key_wanted(key: str) -> bool:
 def is_event_on(event: str) -> bool:
     """Cheap pre-check (before a camera picture is taken): master switch on and
     someone wants this event. Doesn't touch the spam guard."""
-    key = EVENT_SETTING.get(event)
-    return is_enabled("notifications") and key is not None and key_wanted(key)
+    return is_enabled("notifications") and _event_switch(event, shared_only=False)
 
 
 def wants_image(event: str) -> bool:

@@ -1,5 +1,16 @@
 [
   {
+    "version": "2.4.0-beta.22",
+    "date": "2026-11-28",
+    "changes": [
+      "The integration is now plain MQTT and always publishes: printer state, availability, camera frames and — new — your notifications reach your own broker as JSON with the picture alongside; Home Assistant discovery becomes an optional switch on top, and switching it off now also clears configs a previous run left behind",
+      "New sensors per printer: Time elapsed (next to Time remaining), a Status sensor listing all possible states, and a Last notification sensor that turns every notification into a ready-made automation trigger",
+      "New notifications: Nozzle cooled down (fires when the nozzle cools below the same threshold the hot-idle warning uses) and Bed cooled down (own threshold) — event-driven power-off automations instead of a fixed wait",
+      "New fan sensors: part, auxiliary and chamber fan speed in percent",
+      "Reliability groundwork: the event bus, print lifecycle and queue failure modes are now fully pinned by tests — two real bugs fell out (the light could stay on forever after a print-end picture, and an upload failure reported the wrong cause)"
+    ]
+  },
+  {
     "version": "2.4.0-beta.21",
     "date": "2026-11-26",
     "changes": [

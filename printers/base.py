@@ -312,6 +312,8 @@ class PrinterConnection:
         self._notif_state: dict = {
             "last_status":      None,
             "nozzle_idle_fired": False,
+            "nozzle_hot_seen":  False,
+            "bed_hot_seen":     False,
             "layer_fired":      False,
             "layer_seen":       None,
             "nozzle_hot_fired": False,
@@ -401,6 +403,10 @@ class PrinterConnection:
         # An offline printer's status dict is its last reading — history, not
         # a measurement. The canonical temps zero out like the card does.
         temps = status if self.connected else {}
+        # Fan percents (CC1/CC2 put them into status['FanSpeed'] under the
+        # spooler names). Same offline rule as the temps; consumers gate fan
+        # entities on capabilities, not values — a printer without fans reads 0.
+        fans = (status.get("FanSpeed") or {}) if self.connected else {}
         return {
             "id":              self.id,
             "ip":              self.ip,
@@ -448,6 +454,9 @@ class PrinterConnection:
             "bed_target":      _first_num(temps, "TempTargetHotbed", "BedTempTarget", default=0),
             "chamber_temp":    _first_num(temps, "TempOfBox", "ChamberTemp", default=0),
             "chamber_target":  _first_num(temps, "TempTargetBox", default=0),
+            "fan_part":        _first_num(fans, "part", default=0),
+            "fan_aux":         _first_num(fans, "aux", default=0),
+            "fan_chamber":     _first_num(fans, "chamber", default=0),
             "progress":        _progress_percent(pi),
             "layer":           pi.get("CurrentLayer") or 0,
             "total_layer":     pi.get("TotalLayer") or 0,
@@ -818,17 +827,37 @@ class PrinterConnection:
             else:
                 state.publish("print_complete", printer_id=self.id, printer=self.to_dict(), data={"filename": fname})
 
-        if is_idle and wanted("nozzle_idle"):
+        if is_idle and (wanted("nozzle_idle") or s.get("nozzle_idle", {}).get("cooled", False)):
             thr = s.get("nozzle_idle", {}).get("threshold", 50)
-            if nozzle > thr and not ns["nozzle_idle_fired"]:
-                state.publish("nozzle_hot_idle", printer_id=self.id, printer=self.to_dict(), data={"temp": nozzle})
-                ns["nozzle_idle_fired"] = True
+            if nozzle > thr:
+                if wanted("nozzle_idle") and not ns["nozzle_idle_fired"]:
+                    state.publish("nozzle_hot_idle", printer_id=self.id, printer=self.to_dict(), data={"temp": nozzle})
+                    ns["nozzle_idle_fired"] = True
+                ns["nozzle_hot_seen"] = True
             elif nozzle <= thr - 5:          # a few degrees of margin so a reading hovering at the limit can't repeat it
+                # The cooled mirror: armed hot while idle, fires exactly once on
+                # the crossing below. The flag survives a print that starts
+                # while hot — the whole hot stretch ends with one cooled event.
+                if ns.get("nozzle_hot_seen") and s.get("nozzle_idle", {}).get("cooled", False):
+                    state.publish("nozzle_cooled", printer_id=self.id, printer=self.to_dict(), data={"temp": nozzle})
+                ns["nozzle_hot_seen"] = False
                 ns["nozzle_idle_fired"] = False
         elif is_printing or nozzle <= s.get("nozzle_idle", {}).get("threshold", 50) - 5:
             # Re-arm only when a print starts or the nozzle has cooled: a status that
             # flickers away from idle for a moment (preparing, busy) must not repeat the warning.
             ns["nozzle_idle_fired"] = False
+
+        # Bed cooled: the bed cools far slower than the nozzle and holds the
+        # part — its own threshold block, armed hot in any state, fired once
+        # below threshold - 5 once the printer is no longer printing.
+        bed = self.status.get("TempOfHotbed") or self.status.get("BedTemp") or 0
+        if wanted("bed_cooled"):
+            bthr = s.get("bed_cooled", {}).get("threshold", 40)
+            if bed > bthr:
+                ns["bed_hot_seen"] = True
+            elif bed <= bthr - 5 and ns.get("bed_hot_seen") and not is_printing and status not in PAUSED_STATUSES:
+                state.publish("bed_cooled", printer_id=self.id, printer=self.to_dict(), data={"temp": bed})
+                ns["bed_hot_seen"] = False
 
         # Once per print: a busy or paused status in between, or a layer reading that
         # dips, must not announce the same layer again. The flag resets when the print ends.
