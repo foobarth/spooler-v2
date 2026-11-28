@@ -465,9 +465,9 @@ def test_hot_nozzle_idle_warns_once_even_if_the_status_flickers():
 # ── cooled-down events: the mirror of the hot-idle warning ───────────────────
 
 def test_nozzle_cooled_fires_once_on_the_hot_to_cool_transition():
-    """Armed hot while idle, fires exactly on the crossing below
-    (threshold - 5), silent on re-arm — its own settings block, no relation
-    to the hot-idle warning's switch."""
+    """Fires exactly at the threshold the user set (not 5 degrees below) —
+    armed hot while idle, one fire, silent on re-arm. Independent of the
+    hot-idle warning's switch."""
     push.save_notif_settings({"nozzle_cooled": {"enabled": True, "threshold": 50}})
     p = PrinterConnection("pid1", "10.0.0.5", "Bench")
     p.emitted = []
@@ -480,13 +480,13 @@ def test_nozzle_cooled_fires_once_on_the_hot_to_cool_transition():
     at(0, 40)                                   # never hot: nothing
     assert p.emitted.count("nozzle_cooled") == 0
     at(0, 120)                                  # hot while idle: armed
-    at(0, 48)                                   # hovering between thr-5 and thr
-    at(0, 44)                                   # cooled below thr - 5: fire
+    at(0, 51)                                   # hovering above the threshold
+    at(0, 50)                                   # crossing AT the threshold: fire
     assert p.emitted.count("nozzle_cooled") == 1
     assert p.emitted.count("nozzle_hot_idle") == 0   # hot-idle switch is off
-    at(0, 44); at(0, 46)
-    assert p.emitted.count("nozzle_cooled") == 1     # hovering does not repeat
-    at(0, 120); at(0, 40)                            # re-armed and cooled again
+    at(0, 44); at(0, 49)
+    assert p.emitted.count("nozzle_cooled") == 1     # below: no re-arm, no repeat
+    at(0, 120); at(0, 50)                            # re-armed and cooled again
     assert p.emitted.count("nozzle_cooled") == 2
 
 
@@ -534,7 +534,7 @@ def test_nozzle_cooled_threshold_is_independent_of_the_hot_warning():
 
 def test_bed_cooled_fires_once_when_the_bed_crosses_below_the_threshold():
     """The bed cools far slower than the nozzle and holds the part: its own
-    threshold block, armed hot (any state), fired once below threshold - 5
+    threshold block, armed hot (any state), fired exactly at the threshold —
     once the printer is no longer printing."""
     push.save_notif_settings({"bed_cooled": {"enabled": True, "threshold": 50}})
     p = PrinterConnection("pid1", "10.0.0.5", "Bench")
@@ -549,8 +549,8 @@ def test_bed_cooled_fires_once_when_the_bed_crosses_below_the_threshold():
     assert p.emitted.count("bed_cooled") == 0
     at(3, 60)           # printing, bed hot: armed
     at(0, 55)           # done, still hot
-    at(0, 46)           # hovering
-    at(0, 44)           # below threshold - 5: fire
+    at(0, 51)           # hovering above the threshold
+    at(0, 50)           # crossing AT the threshold: fire
     assert p.emitted.count("bed_cooled") == 1
     at(0, 44)
     assert p.emitted.count("bed_cooled") == 1   # once

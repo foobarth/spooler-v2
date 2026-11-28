@@ -849,10 +849,17 @@ class PrinterConnection:
             if is_idle:
                 if nozzle > cthr:
                     ns["nozzle_hot_seen"] = True
-                elif nozzle <= cthr - 5 and ns.get("nozzle_hot_seen"):
+                elif nozzle <= cthr and ns.get("nozzle_hot_seen"):
+                    # Fires AT the threshold the user set — a crossing event,
+                    # not a sustained-state warning; the oscillation case is
+                    # bounded by the notification spam guard and re-arming
+                    # needs a hot reading first. (The hot-idle warning above
+                    # keeps its own re-arm margin: repeating a warning while
+                    # hovering at the limit is its failure mode, missing a
+                    # crossing is not.)
                     state.publish("nozzle_cooled", printer_id=self.id, printer=self.to_dict(), data={"temp": nozzle})
                     ns["nozzle_hot_seen"] = False
-            elif not is_printing and nozzle <= cthr - 5:
+            elif not is_printing and nozzle <= cthr:
                 # A cold crossing off-idle (preparing, busy) isn't news either.
                 ns["nozzle_hot_seen"] = False
 
@@ -864,7 +871,7 @@ class PrinterConnection:
             bthr = s.get("bed_cooled", {}).get("threshold", 40)
             if bed > bthr:
                 ns["bed_hot_seen"] = True
-            elif bed <= bthr - 5 and ns.get("bed_hot_seen") and not is_printing and status not in PAUSED_STATUSES:
+            elif bed <= bthr and ns.get("bed_hot_seen") and not is_printing and status not in PAUSED_STATUSES:
                 state.publish("bed_cooled", printer_id=self.id, printer=self.to_dict(), data={"temp": bed})
                 ns["bed_hot_seen"] = False
 
