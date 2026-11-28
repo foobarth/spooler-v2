@@ -670,6 +670,7 @@ async def test_a_cancelled_offline_timer_publishes_nothing(printer, monkeypatch)
     async def slow_sleep(t):
         await real_sleep(10)            # would only finish if not cancelled
 
+
     monkeypatch.setattr(base.asyncio, "sleep", slow_sleep)
     printer.connected = False
     printer._track_connection_for_notifications()
@@ -685,3 +686,42 @@ def test_an_unparsable_pause_timestamp_leaves_the_duration_empty(printer):
     printer._finish_current_pause()
     seg = printer._current_print_pauses[0]
     assert seg["until"] is not None and seg["duration_s"] is None
+
+
+# ── outage logging: a powered-down printer logs once, then a heartbeat ──────
+
+def test_plog_dedupes_repeats_until_the_heartbeat(monkeypatch, capsys):
+    """A deliberately powered-down printer must not log its attempt lines
+    every 5 s for days — identical lines rate-limit to one per heartbeat."""
+    p = PrinterConnection("p1", "192.0.2.5", "Workshop")
+    t = [1000.0]
+    monkeypatch.setattr(base_mod.time, "monotonic", lambda: t[0])
+    p._plog("same line")
+    p._plog("same line")
+    p._plog("other line")
+    t[0] += 601                                 # past the heartbeat
+    p._plog("same line")
+    out = capsys.readouterr().out
+    assert out.count("[Printer Workshop] same line") == 2
+    assert out.count("[Printer Workshop] other line") == 1
+
+
+async def test_retry_loop_logs_once_while_the_printer_stays_off(monkeypatch, capsys):
+    """The 5 s retry loop used to print "Retrying in 5 s" on every pass —
+    hours of a powered-down printer. It logs once, then the heartbeat."""
+    p = PrinterConnection("p1", "192.0.2.5", "Workshop")
+    attempts = 0
+
+    async def fail():
+        nonlocal attempts
+        attempts += 1
+        p.connected = False
+        if attempts >= 3:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(p, "connect", fail)
+    async def instant(_):
+        return None
+    monkeypatch.setattr(base_mod.asyncio, "sleep", instant)
+    await p.start()
+    assert capsys.readouterr().out.count("Retrying in 5 s") == 1

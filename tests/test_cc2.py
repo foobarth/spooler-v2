@@ -723,3 +723,29 @@ async def test_preheat_aborted_start_does_not_debit_the_previous_print(printer, 
     assert phantom[0]["filament_mm"] == 0.0, \
         f"nothing was extruded, but the entry debits {phantom[0]['filament_mm']} mm — the previous print's figure"
     assert phantom[0]["end_state"] == "cancelled"
+
+
+async def test_cc2_outage_lines_log_once_while_the_printer_is_off(monkeypatch, capsys):
+    """Two failed connect() calls must log the outage lines once, not per
+    attempt — the socket layer is stubbed (a refused loopback is not
+    guaranteed on this host), the connect path's logging is real."""
+    import printers.cc2 as cc2_mod
+
+    class _Refusing:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            raise ConnectionRefusedError("Connection refused (stub broker)")
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(cc2_mod.aiomqtt, "Client", _Refusing)
+    p = CC2Connection("p1", "127.0.0.1", "Bench")
+    p.connected = False
+    await p.connect()
+    await p.connect()
+    out = capsys.readouterr().out
+    assert out.count("Connecting via MQTT") == 1, out
+    assert out.count("MQTT failed") == 1, out

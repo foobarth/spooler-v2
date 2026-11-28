@@ -46,6 +46,10 @@ _END_STATUSES     = {9, 8, 14, 0}
 # shot. A guess, not measured against real hardware -- raise it if the
 # picture still shows the toolhead blocking the model.
 PRINT_PICTURE_DELAY_S = 6.0
+# Printer-lifecycle log rate limit: a printer that is deliberately powered
+# down for hours must not log its attempt lines every 5 s. Identical messages
+# re-log at most once per heartbeat (see PrinterConnection._plog).
+_PLOG_HEARTBEAT_S = 600.0
 
 
 def classify_print_transition(prev_status, cur_status) -> str | None:
@@ -302,6 +306,8 @@ class PrinterConnection:
         self._acct: PrintAccounting | None = None
         self._acct_saved_at = 0.0
         self._acct_saved_mm = 0.0
+        # Per-message outage-log rate limiting (see _plog).
+        self._plog_seen: dict[str, float] = {}
         # Highest layer count seen during the print in progress -- some
         # protocols reset TotalLayer/CurrentLayer to 0 on the very status
         # update that reports the print as finished, so the "end" event's own
@@ -488,10 +494,21 @@ class PrinterConnection:
             while True:
                 await self.connect()
                 if not self.connected:
-                    print(f"[Printer {self.name}] Retrying in 5 s …")
+                    self._plog("Retrying in 5 s …")
                 await asyncio.sleep(5)
         except asyncio.CancelledError:
             pass
+
+    def _plog(self, msg: str) -> None:
+        """Log a printer-lifecycle line, but at most once per heartbeat while
+        the same message repeats: a deliberately powered-down printer used to
+        write three lines every 5 s for as long as it stayed off. A changed
+        message (reconnect, a new error) logs immediately."""
+        seen = self._plog_seen.get(msg)
+        now = time.monotonic()
+        if seen is None or now - seen >= _PLOG_HEARTBEAT_S:
+            print(f"[Printer {self.name}] {msg}")
+            self._plog_seen[msg] = now
 
     # ── Subclass contract ──────────────────────────────────────────────────────
 

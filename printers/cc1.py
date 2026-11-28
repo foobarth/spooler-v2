@@ -106,7 +106,7 @@ class CC1Connection(PrinterConnection):
         self._prev_active_tray_id = -2
         url = f"ws://{self.ip}:{PRINTER_PORT}/websocket"
         try:
-            print(f"[Printer {self.name}] Connecting to {url} …")
+            self._plog(f"Connecting to {url} …")
             # Disable WS-level pings — CC1 firmware doesn't respond to them,
             # which causes spurious disconnects. App-level keepalive handles this.
             self.ws = await ws_connect(url, ping_interval=None)
@@ -121,7 +121,7 @@ class CC1Connection(PrinterConnection):
             loop = asyncio.get_running_loop()
             loop.run_in_executor(None, self._sync_spoolman_locations)
         except Exception as e:
-            print(f"[Printer {self.name}] Connection failed: {e}")
+            self._plog(f"Connection failed: {e}")
             if " 500" in str(e):
                 # The CC1 accepts at most 5 WebSocket clients and answers the
                 # 6th with HTTP 500 "too many client" (reported by pycentauri).

@@ -182,7 +182,7 @@ class CC2Connection(PrinterConnection):
             await self._broadcast_state()
             return
         try:
-            print(f"[Printer {self.name}] Connecting via MQTT to {self.ip}:1883 …")
+            self._plog(f"Connecting via MQTT to {self.ip}:1883 …")
             ts_hex  = format(int(time.time() * 1000), "x")[-5:]
             rnd_hex = format(secrets.randbelow(4096), "x")
             self._mqtt_client_id  = f"0cli{ts_hex}{rnd_hex}"[:10]
@@ -231,7 +231,7 @@ class CC2Connection(PrinterConnection):
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            print(f"[Printer {self.name}] MQTT failed: {e}")
+            self._plog(f"MQTT failed: {e}")
         finally:
             self._mqtt_client     = None
             self._mqtt_registered = False
